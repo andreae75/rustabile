@@ -46,6 +46,7 @@ struct Stato {
     /// Il pannello playlist: un elenco di testi ("▶ 3. Titolo") mostrato da una ListView.
     elenco: gtk::StringList,
     vista: gtk::ListView,
+    segno: Rc<Segno>,
     conteggio: gtk::Label,
     /// Finché esiste, GStreamer ci consegna i suoi messaggi (fine brano, errori, tag).
     _guardia_bus: Option<gst::bus::BusWatchGuard>,
@@ -204,27 +205,38 @@ impl Stato {
             .set_icon_name("media-playback-pause-symbolic");
 
         // Nel pannello: togli il segno dal brano di prima, mettilo a quello nuovo.
+        self.segno.corrente.set(Some(indice as u32));
         if let Some(p) = precedente {
             self.aggiorna_riga(p);
         }
         self.aggiorna_riga(indice);
-        self.vista
-            .scroll_to(indice as u32, gtk::ListScrollFlags::NONE, None);
+        // Scorri l'elenco solo se il brano non è già a vista (per esempio col "avanti"
+        // automatico): se l'hai appena cliccato, l'elenco deve restare fermo.
+        if !self.segno.etichette.borrow().contains_key(&(indice as u32)) {
+            self.vista
+                .scroll_to(indice as u32, gtk::ListScrollFlags::NONE, None);
+        }
     }
 
     fn testo_riga(&self, i: usize) -> String {
-        let segno = if self.corrente == Some(i) {
-            "▶"
-        } else {
-            "  "
-        };
-        format!("{segno} {}. {}", i + 1, self.playlist[i].nome)
+        format!("{}. {}", i + 1, self.playlist[i].nome)
     }
 
+    /// Aggiorna il segno ▶ di una riga cambiando solo il testo della sua etichetta.
+    /// Non tocchiamo l'elenco: sostituire un elemento farebbe ricreare la riga
+    /// alla ListView, che perde il punto in cui eri e fa saltare la lista.
     fn aggiorna_riga(&self, i: usize) {
-        if i < self.playlist.len() {
-            self.elenco
-                .splice(i as u32, 1, &[self.testo_riga(i).as_str()]);
+        let etichetta = self
+            .segno
+            .etichette
+            .borrow()
+            .get(&(i as u32))
+            .and_then(|w| w.upgrade());
+        if let (Some(etichetta), Some(testo)) = (etichetta, self.elenco.string(i as u32)) {
+            etichetta.set_label(&con_segno(
+                &testo,
+                self.segno.corrente.get() == Some(i as u32),
+            ));
         }
     }
 
@@ -286,6 +298,7 @@ impl Stato {
             Some(i) => {
                 self.ferma();
                 self.corrente = None;
+                self.segno.corrente.set(None);
                 self.aggiorna_riga(i);
             }
             None => {}
@@ -327,6 +340,7 @@ impl Stato {
         self.elenco.splice(0, self.elenco.n_items(), &[]);
         self.aggiorna_conteggio();
         self.corrente = None;
+        self.segno.corrente.set(None);
         self.titolo
             .set_label("Trascina qui musica, cartelle o playlist");
         self.dettagli.set_label("");
@@ -630,9 +644,26 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     menu
 }
 
+/// Chi suona adesso nel pannello, e le etichette delle righe a vista.
+/// La ListView ricicla poche righe mentre scorri: teniamo traccia di quale
+/// etichetta mostra quale posizione, per aggiornare il segno ▶ senza toccare l'elenco.
+#[derive(Default)]
+struct Segno {
+    corrente: std::cell::Cell<Option<u32>>,
+    etichette: RefCell<std::collections::HashMap<u32, glib::WeakRef<gtk::Label>>>,
+}
+
+fn con_segno(testo: &str, corrente: bool) -> String {
+    if corrente {
+        format!("▶ {testo}")
+    } else {
+        format!("   {testo}")
+    }
+}
+
 /// La vista dell'elenco: una `ListView` che mostra i testi di `elenco`.
 /// Crea solo le righe visibili, quindi regge anche playlist di migliaia di radio.
-fn crea_vista_playlist(elenco: &gtk::StringList) -> gtk::ListView {
+fn crea_vista_playlist(elenco: &gtk::StringList, segno: &Rc<Segno>) -> gtk::ListView {
     let fabbrica = gtk::SignalListItemFactory::new();
     fabbrica.connect_setup(|_, oggetto| {
         let riga = oggetto.downcast_ref::<gtk::ListItem>().expect("ListItem");
@@ -643,7 +674,8 @@ fn crea_vista_playlist(elenco: &gtk::StringList) -> gtk::ListView {
         etichetta.set_margin_end(6);
         riga.set_child(Some(&etichetta));
     });
-    fabbrica.connect_bind(|_, oggetto| {
+    let s = segno.clone();
+    fabbrica.connect_bind(move |_, oggetto| {
         let riga = oggetto.downcast_ref::<gtk::ListItem>().expect("ListItem");
         let (Some(testo), Some(etichetta)) = (
             riga.item().and_downcast::<gtk::StringObject>(),
@@ -651,7 +683,23 @@ fn crea_vista_playlist(elenco: &gtk::StringList) -> gtk::ListView {
         ) else {
             return;
         };
-        etichetta.set_label(&testo.string());
+        let posizione = riga.position();
+        etichetta.set_label(&con_segno(
+            &testo.string(),
+            s.corrente.get() == Some(posizione),
+        ));
+        s.etichette
+            .borrow_mut()
+            .insert(posizione, etichetta.downgrade());
+    });
+    let s = segno.clone();
+    fabbrica.connect_unbind(move |_, oggetto| {
+        let riga = oggetto.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        if let Some(etichetta) = riga.child().and_downcast::<gtk::Label>() {
+            s.etichette
+                .borrow_mut()
+                .retain(|_, w| w.upgrade().as_ref() != Some(&etichetta));
+        }
     });
     let vista = gtk::ListView::new(
         Some(gtk::NoSelection::new(Some(elenco.clone()))),
@@ -910,6 +958,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     playbin.set_property("volume", volume.value());
 
     let elenco = gtk::StringList::new(&[]);
+    let segno = Rc::new(Segno::default());
     let stato = Rc::new(RefCell::new(Stato {
         playbin: playbin.clone(),
         playlist: Vec::new(),
@@ -922,7 +971,8 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         qualita: Qualita::default(),
         impostazioni,
         elenco: elenco.clone(),
-        vista: crea_vista_playlist(&elenco),
+        vista: crea_vista_playlist(&elenco, &segno),
+        segno: segno.clone(),
         conteggio: gtk::Label::new(None),
         _guardia_bus: None,
     }));
