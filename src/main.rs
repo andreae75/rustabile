@@ -57,6 +57,12 @@ struct Qualita {
     dimensione: Option<u64>,
     /// Estensione, come ripiego per il nome del formato.
     estensione: String,
+    /// Vero per gli stream (radio): cambia come mostriamo titolo e stazione.
+    radio: bool,
+    /// Nome della stazione, se la radio lo trasmette (tag "organization", da icy-name).
+    stazione: Option<String>,
+    /// Brano in onda, se la radio lo trasmette (tag "title", da StreamTitle).
+    in_onda: Option<String>,
 }
 
 impl Qualita {
@@ -130,6 +136,7 @@ impl Stato {
                 .and_then(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len()),
             estensione: estensione(&voce.uri),
+            radio: file.path().is_none(),
             ..Default::default()
         };
         self.dettagli.set_label("");
@@ -216,14 +223,33 @@ impl Stato {
     }
 
     /// I "tag" arrivano dal file o dalla radio: titolo, codec, bitrate.
-    /// Le radio mandano così anche il titolo del brano in onda.
+    /// Le radio mandano così il nome della stazione e il brano in onda.
     fn mostra_tag(&mut self, tag: &gst::TagList) {
         let Some(i) = self.corrente else { return };
-        if let Some(titolo) = tag.get::<gst::tags::Title>() {
-            let titolo = titolo.get();
-            if !titolo.trim().is_empty() {
-                self.titolo.set_label(&format!("{}. {}", i + 1, titolo));
+        let testo = |t: &str| Some(t.trim().to_string()).filter(|t| !t.is_empty());
+        let titolo = tag.get::<gst::tags::Title>().and_then(|t| testo(t.get()));
+
+        if self.qualita.radio {
+            if let Some(s) = tag
+                .get::<gst::tags::Organization>()
+                .and_then(|s| testo(s.get()))
+            {
+                self.qualita.stazione = Some(s);
             }
+            if titolo.is_some() {
+                self.qualita.in_onda = titolo;
+            }
+            // "Stazione — Brano", oppure quello che c'è dei due.
+            let riga = match (&self.qualita.stazione, &self.qualita.in_onda) {
+                (Some(s), Some(t)) => Some(format!("{s} — {t}")),
+                (Some(x), None) | (None, Some(x)) => Some(x.clone()),
+                (None, None) => None,
+            };
+            if let Some(riga) = riga {
+                self.titolo.set_label(&format!("{}. {}", i + 1, riga));
+            }
+        } else if let Some(titolo) = titolo {
+            self.titolo.set_label(&format!("{}. {}", i + 1, titolo));
         }
         if let Some(codec) = tag.get::<gst::tags::AudioCodec>() {
             self.qualita.codec = Some(codec.get().to_string());
