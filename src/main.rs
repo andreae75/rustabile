@@ -42,6 +42,7 @@ struct Stato {
     /// Riga piccola con formato e qualità: "FLAC · 16 bit · 44,1 kHz · stereo · 912 kbps".
     dettagli: gtk::Label,
     qualita: Qualita,
+    impostazioni: Impostazioni,
     /// Finché esiste, GStreamer ci consegna i suoi messaggi (fine brano, errori, tag).
     _guardia_bus: Option<gst::bus::BusWatchGuard>,
 }
@@ -84,6 +85,50 @@ impl Qualita {
         ["FLAC", "WAV", "PCM", "ALAC", "APE", "WAVPACK"]
             .iter()
             .any(|x| f.contains(x))
+    }
+}
+
+/// Le preferenze, salvate in `~/.config/rustabile/impostazioni.ini`
+/// con il `KeyFile` di GLib (lo stesso formato dei file .desktop).
+struct Impostazioni {
+    /// Finestra sempre sopra le altre (con Xwayland, vale dalla prossima apertura).
+    sempre_sopra: bool,
+    /// Trascinando file nella finestra: suonano subito (vero) o vanno in coda (falso).
+    trascina_suona: bool,
+    volume: f64,
+}
+
+impl Impostazioni {
+    const GRUPPO: &str = "Rustabile";
+
+    fn percorso() -> std::path::PathBuf {
+        glib::user_config_dir()
+            .join("rustabile")
+            .join("impostazioni.ini")
+    }
+
+    fn carica() -> Self {
+        let kf = glib::KeyFile::new();
+        let _ = kf.load_from_file(Self::percorso(), glib::KeyFileFlags::NONE);
+        Impostazioni {
+            sempre_sopra: kf.boolean(Self::GRUPPO, "sempre_sopra").unwrap_or(false),
+            trascina_suona: kf.boolean(Self::GRUPPO, "trascina_suona").unwrap_or(true),
+            volume: kf.double(Self::GRUPPO, "volume").unwrap_or(0.8),
+        }
+    }
+
+    fn salva(&self) {
+        let kf = glib::KeyFile::new();
+        kf.set_boolean(Self::GRUPPO, "sempre_sopra", self.sempre_sopra);
+        kf.set_boolean(Self::GRUPPO, "trascina_suona", self.trascina_suona);
+        kf.set_double(Self::GRUPPO, "volume", self.volume);
+        let percorso = Self::percorso();
+        if let Some(cartella) = percorso.parent() {
+            let _ = std::fs::create_dir_all(cartella);
+        }
+        if let Err(e) = kf.save_to_file(&percorso) {
+            eprintln!("Impossibile salvare le impostazioni: {e}");
+        }
     }
 }
 
@@ -208,6 +253,24 @@ impl Stato {
             gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
             destinazione,
         );
+    }
+
+    /// Aggiunge voci in fondo alla playlist e fa partire subito la prima nuova.
+    fn aggiungi_e_suona(&mut self, nuove: Vec<Voce>) {
+        let prima_nuova = self.playlist.len();
+        self.playlist.extend(nuove);
+        if prima_nuova < self.playlist.len() {
+            self.suona(prima_nuova);
+        }
+    }
+
+    fn svuota(&mut self) {
+        self.ferma();
+        self.playlist.clear();
+        self.corrente = None;
+        self.titolo
+            .set_label("Trascina qui musica, cartelle o playlist");
+        self.dettagli.set_label("");
     }
 
     /// Aggiunge voci in fondo alla playlist; se non stava suonando nulla, parte la prima nuova.
@@ -494,13 +557,8 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
             }
             let mut nuove = Vec::new();
             raccogli(&gio::File::for_uri(&testo), &mut nuove);
-            let mut s = stato.borrow_mut();
             // Una radio aggiunta a mano parte subito.
-            let prima_nuova = s.playlist.len();
-            s.playlist.extend(nuove);
-            if prima_nuova < s.playlist.len() {
-                s.suona(prima_nuova);
-            }
+            stato.borrow_mut().aggiungi_e_suona(nuove);
             campo.set_text("");
             riquadro.popdown();
         }
@@ -509,6 +567,257 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     aggiungi.connect_clicked(move |_| c());
     campo.connect_activate(move |_| conferma());
     menu
+}
+
+/// Il pulsante "playlist": mostra i brani in coda; un clic su un brano lo fa partire.
+/// L'elenco viene ricostruito ogni volta che si apre il riquadro.
+fn pulsante_playlist(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
+    let elenco = gtk::ListBox::new();
+    elenco.set_selection_mode(gtk::SelectionMode::None);
+    elenco.set_activate_on_single_click(true);
+
+    let scorrimento = gtk::ScrolledWindow::new();
+    scorrimento.set_child(Some(&elenco));
+    scorrimento.set_hscrollbar_policy(gtk::PolicyType::Never);
+    scorrimento.set_min_content_width(320);
+    scorrimento.set_max_content_height(320);
+    scorrimento.set_propagate_natural_height(true);
+
+    let svuota = gtk::Button::with_label("Svuota la playlist");
+    svuota.add_css_class("destructive-action");
+
+    let colonna = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    colonna.append(&scorrimento);
+    colonna.append(&svuota);
+
+    let riquadro = gtk::Popover::new();
+    riquadro.set_child(Some(&colonna));
+
+    let menu = gtk::MenuButton::new();
+    menu.set_icon_name("view-list-symbolic");
+    menu.set_tooltip_text(Some("Playlist"));
+    menu.add_css_class("flat");
+    menu.set_popover(Some(&riquadro));
+
+    // Riempie l'elenco quando il riquadro si apre.
+    let s = stato.clone();
+    let e = elenco.clone();
+    let sv = svuota.clone();
+    riquadro.connect_show(move |_| {
+        while let Some(figlio) = e.first_child() {
+            e.remove(&figlio);
+        }
+        let stato = s.borrow();
+        if stato.playlist.is_empty() {
+            let vuota = gtk::Label::new(Some("La playlist è vuota"));
+            vuota.set_margin_top(12);
+            vuota.set_margin_bottom(12);
+            vuota.add_css_class("dim-label");
+            e.append(&vuota);
+        }
+        for (i, voce) in stato.playlist.iter().enumerate() {
+            let riga = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            riga.set_margin_top(4);
+            riga.set_margin_bottom(4);
+            riga.set_margin_start(6);
+            riga.set_margin_end(6);
+            let icona = gtk::Image::from_icon_name("media-playback-start-symbolic");
+            icona.set_opacity(if stato.corrente == Some(i) { 1.0 } else { 0.0 });
+            let nome = gtk::Label::new(Some(&format!("{}. {}", i + 1, voce.nome)));
+            nome.set_xalign(0.0);
+            nome.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            if stato.corrente == Some(i) {
+                nome.add_css_class("heading");
+            }
+            riga.append(&icona);
+            riga.append(&nome);
+            e.append(&riga);
+        }
+        sv.set_sensitive(!stato.playlist.is_empty());
+    });
+
+    let s = stato.clone();
+    let r = riquadro.clone();
+    elenco.connect_row_activated(move |_, riga| {
+        let i = riga.index();
+        let mut stato = s.borrow_mut();
+        if i >= 0 && (i as usize) < stato.playlist.len() {
+            stato.suona(i as usize);
+            r.popdown();
+        }
+    });
+
+    let s = stato.clone();
+    let r = riquadro.clone();
+    svuota.connect_clicked(move |_| {
+        s.borrow_mut().svuota();
+        r.popdown();
+    });
+    menu
+}
+
+/// Finestrella delle preferenze: due interruttori, salvati subito su file.
+fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) {
+    let riga = |titolo: &str, spiegazione: &str, attivo: bool| {
+        let testi = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        testi.set_hexpand(true);
+        let t = gtk::Label::new(Some(titolo));
+        t.set_xalign(0.0);
+        let s = gtk::Label::new(Some(spiegazione));
+        s.set_xalign(0.0);
+        s.set_wrap(true);
+        s.set_max_width_chars(40);
+        s.add_css_class("dim-label");
+        s.add_css_class("caption");
+        testi.append(&t);
+        testi.append(&s);
+        let interruttore = gtk::Switch::new();
+        interruttore.set_active(attivo);
+        interruttore.set_valign(gtk::Align::Center);
+        let r = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        r.append(&testi);
+        r.append(&interruttore);
+        (r, interruttore)
+    };
+
+    let imp = &stato.borrow().impostazioni;
+    let (r1, sopra) = riga(
+        "Sempre in primo piano",
+        "Tiene la finestra sopra le altre. Su GNOME funziona solo tramite Xwayland: \
+         vale dalla prossima apertura di Rustabile.",
+        imp.sempre_sopra,
+    );
+    let (r2, trascina) = riga(
+        "Trascinando, suona subito",
+        "Se è spento, i file trascinati vanno in fondo alla playlist senza interrompere \
+         il brano in corso.",
+        imp.trascina_suona,
+    );
+
+    let colonna = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    colonna.set_margin_top(18);
+    colonna.set_margin_bottom(18);
+    colonna.set_margin_start(18);
+    colonna.set_margin_end(18);
+    colonna.append(&r1);
+    colonna.append(&r2);
+
+    let s = stato.clone();
+    sopra.connect_active_notify(move |i| {
+        let mut stato = s.borrow_mut();
+        stato.impostazioni.sempre_sopra = i.is_active();
+        stato.impostazioni.salva();
+    });
+    let s = stato.clone();
+    trascina.connect_active_notify(move |i| {
+        let mut stato = s.borrow_mut();
+        stato.impostazioni.trascina_suona = i.is_active();
+        stato.impostazioni.salva();
+    });
+
+    gtk::Window::builder()
+        .title("Preferenze")
+        .transient_for(finestra)
+        .modal(true)
+        .resizable(false)
+        .child(&colonna)
+        .build()
+        .present();
+}
+
+fn mostra_informazioni(finestra: &gtk::ApplicationWindow) {
+    gtk::AboutDialog::builder()
+        .transient_for(finestra)
+        .modal(true)
+        .program_name("Rustabile")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments("Un mini lettore musicale per GNOME, semplice come i lettori di una volta.\nScritto in Rust con GTK4 e GStreamer.")
+        .logo_icon_name("audio-x-generic")
+        .authors(["andreae75"])
+        .license_type(gtk::License::MitX11)
+        .build()
+        .present();
+}
+
+/// Il pulsante con il menu: Preferenze e Informazioni.
+fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
+    let preferenze = gio::SimpleAction::new("preferenze", None);
+    let (w, s) = (finestra.clone(), stato.clone());
+    preferenze.connect_activate(move |_, _| mostra_preferenze(&w, &s));
+    finestra.add_action(&preferenze);
+
+    let informazioni = gio::SimpleAction::new("informazioni", None);
+    let w = finestra.clone();
+    informazioni.connect_activate(move |_, _| mostra_informazioni(&w));
+    finestra.add_action(&informazioni);
+
+    let modello = gio::Menu::new();
+    modello.append(Some("Preferenze"), Some("win.preferenze"));
+    modello.append(Some("Informazioni su Rustabile"), Some("win.informazioni"));
+
+    let menu = gtk::MenuButton::new();
+    menu.set_icon_name("open-menu-symbolic");
+    menu.set_tooltip_text(Some("Menu"));
+    menu.add_css_class("flat");
+    menu.set_menu_model(Some(&modello));
+    menu
+}
+
+/// "Sempre in primo piano". Su Wayland un'app non può chiederlo, quindi quando
+/// l'opzione è attiva Rustabile parte con Xwayland (vedi `main`) e qui manda
+/// al window manager la richiesta X11 standard `_NET_WM_STATE_ABOVE`.
+fn metti_sopra(finestra: &gtk::ApplicationWindow) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
+
+    let Some(superficie) = finestra.surface() else {
+        return;
+    };
+    let Ok(superficie_x11) = superficie.downcast::<gdk_x11::X11Surface>() else {
+        eprintln!("Sempre in primo piano: la finestra non usa X11, ignoro");
+        return;
+    };
+    let xid = superficie_x11.xid() as u32;
+
+    let Ok((conn, schermo)) = x11rb::connect(None) else {
+        return;
+    };
+    let radice = conn.setup().roots[schermo].root;
+    let atomo = |nome: &str| {
+        conn.intern_atom(false, nome.as_bytes())
+            .ok()?
+            .reply()
+            .ok()
+            .map(|r| r.atom)
+    };
+    let (Some(stato), Some(sopra)) = (atomo("_NET_WM_STATE"), atomo("_NET_WM_STATE_ABOVE")) else {
+        return;
+    };
+    // data: [azione 1 = aggiungi, proprietà, seconda proprietà, sorgente 1 = applicazione, 0]
+    let evento = ClientMessageEvent::new(32, xid, stato, [1u32, sopra, 0, 1, 0]);
+    let _ = conn.send_event(
+        false,
+        radice,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        evento,
+    );
+    let _ = conn.flush();
+}
+
+/// Testo trascinato (per esempio un link da un browser): una voce per riga.
+fn file_da_testo(testo: &str) -> Vec<gio::File> {
+    testo
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && !r.starts_with('#'))
+        .map(|r| {
+            if r.contains("://") {
+                gio::File::for_uri(r)
+            } else {
+                gio::File::for_path(r)
+            }
+        })
+        .collect()
 }
 
 /// La finestra e il suo stato, creati una volta sola e riusati da "activate" e "open".
@@ -545,7 +854,8 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
 
     let volume = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.05);
     volume.set_draw_value(false);
-    volume.set_value(0.8);
+    let impostazioni = Impostazioni::carica();
+    volume.set_value(impostazioni.volume);
     volume.set_hexpand(true);
     volume.set_tooltip_text(Some("Volume"));
 
@@ -565,6 +875,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         pulsante_play: pulsante_play.clone(),
         dettagli,
         qualita: Qualita::default(),
+        impostazioni,
         _guardia_bus: None,
     }));
 
@@ -572,6 +883,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     for b in [&indietro, &pulsante_play, &ferma, &avanti] {
         comandi.append(b);
     }
+    comandi.append(&pulsante_playlist(&stato));
     comandi.append(&pulsante_radio(&stato));
     comandi.append(&gtk::Image::from_icon_name("audio-volume-medium-symbolic"));
     comandi.append(&volume);
@@ -591,6 +903,15 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         .default_width(380)
         .child(&contenuto)
         .build();
+    comandi.append(&pulsante_menu(&finestra, &stato));
+
+    // Sempre in primo piano: la richiesta va fatta quando la finestra è sullo schermo.
+    if stato.borrow().impostazioni.sempre_sopra {
+        finestra.connect_map(|w| {
+            let w = w.clone();
+            glib::idle_add_local_once(move || metti_sopra(&w));
+        });
+    }
 
     // Messaggi di GStreamer: a fine brano si passa al successivo, i tag aggiornano il titolo.
     let bus = playbin.bus().expect("playbin senza bus");
@@ -632,18 +953,32 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         glib::Propagation::Proceed
     });
 
-    // --- Trascinamento di file, cartelle e playlist ---------------------------
-    let destinazione = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    // --- Trascinamento di file, cartelle, playlist e link ---------------------
+    // Accettiamo sia elenchi di file (Nautilus) sia testo (un link da un browser).
+    let destinazione = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+    destinazione.set_types(&[gdk::FileList::static_type(), String::static_type()]);
     let s = stato.clone();
     destinazione.connect_drop(move |_, valore, _, _| {
-        let Ok(lista) = valore.get::<gdk::FileList>() else {
+        let file = if let Ok(lista) = valore.get::<gdk::FileList>() {
+            lista.files()
+        } else if let Ok(testo) = valore.get::<String>() {
+            file_da_testo(&testo)
+        } else {
             return false;
         };
         let mut nuove = Vec::new();
-        for file in lista.files() {
-            raccogli(&file, &mut nuove);
+        for f in &file {
+            raccogli(f, &mut nuove);
         }
-        s.borrow_mut().aggiungi(nuove);
+        if nuove.is_empty() {
+            return false;
+        }
+        let mut stato = s.borrow_mut();
+        if stato.impostazioni.trascina_suona {
+            stato.aggiungi_e_suona(nuove);
+        } else {
+            stato.aggiungi(nuove);
+        }
         true
     });
     finestra.add_controller(destinazione);
@@ -655,9 +990,13 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         glib::ControlFlow::Continue
     });
 
-    // Alla chiusura fermiamo l'audio.
+    // Alla chiusura fermiamo l'audio e ricordiamo il volume.
+    let s = stato.clone();
     finestra.connect_close_request(move |_| {
         let _ = playbin.set_state(gst::State::Null);
+        let mut stato = s.borrow_mut();
+        stato.impostazioni.volume = volume.value();
+        stato.impostazioni.salva();
         glib::Propagation::Proceed
     });
 
@@ -677,6 +1016,12 @@ fn carica_stile() {
 }
 
 fn main() -> glib::ExitCode {
+    // "Sempre in primo piano" richiede X11: lo scegliamo prima che GTK si avvii.
+    // SAFETY: siamo all'inizio di main, nessun altro thread legge l'ambiente.
+    if Impostazioni::carica().sempre_sopra {
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    }
+
     gst::init().expect("impossibile inizializzare GStreamer");
 
     // HANDLES_OPEN: accettiamo file da riga di comando e da "Apri con" di Nautilus.
@@ -708,12 +1053,7 @@ fn main() -> glib::ExitCode {
         for f in file {
             raccogli(f, &mut nuove);
         }
-        let mut s = stato.borrow_mut();
-        let prima_nuova = s.playlist.len();
-        s.playlist.extend(nuove);
-        if prima_nuova < s.playlist.len() {
-            s.suona(prima_nuova);
-        }
+        stato.borrow_mut().aggiungi_e_suona(nuove);
         w.present();
     });
 
