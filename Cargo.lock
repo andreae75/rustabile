@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "rustabile"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gstreamer",
  "gtk4",

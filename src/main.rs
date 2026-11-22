@@ -42,6 +42,7 @@ struct Stato {
     tempo: gtk::Label,
     barra: gtk::Scale,
     pulsante_play: gtk::Button,
+    volume: gtk::Scale,
     /// Riga piccola con formato e qualità: "FLAC · 16 bit · 44,1 kHz · stereo · 912 kbps".
     dettagli: gtk::Label,
     qualita: Qualita,
@@ -263,6 +264,12 @@ impl Stato {
     fn aggiorna_conteggio(&self) {
         let n = self.playlist.len();
         self.conteggio.set_label(&lingua::brani(n));
+    }
+
+    /// Alza o abbassa il volume; il cursore aggiorna da solo il motore audio.
+    fn cambia_volume(&mut self, di: f64) {
+        self.volume
+            .set_value((self.volume.value() + di).clamp(0.0, 1.0));
     }
 
     fn sta_suonando(&self) -> bool {
@@ -914,6 +921,36 @@ fn mostra_informazioni(finestra: &gtk::ApplicationWindow) {
         .present();
 }
 
+/// Vero se in questa finestra si sta scrivendo in un campo di testo:
+/// allora i tasti (Spazio, Canc, lettere) servono al testo, non al lettore.
+fn sta_scrivendo(finestra: &gtk::ApplicationWindow) -> bool {
+    gtk::prelude::GtkWindowExt::focus(finestra)
+        .is_some_and(|f| f.type_().is_a(gtk::Editable::static_type()))
+}
+
+/// Le azioni del lettore (play/pausa, stop, avanti, indietro, volume),
+/// a cui `main` collega le scorciatoie da tastiera.
+fn azioni_lettore(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) {
+    let azioni: [(&str, fn(&mut Stato)); 6] = [
+        ("play_pausa", Stato::play_pausa),
+        ("ferma", Stato::ferma),
+        ("avanti", Stato::avanti),
+        ("indietro", Stato::indietro),
+        ("volume_su", |s| s.cambia_volume(0.05)),
+        ("volume_giu", |s| s.cambia_volume(-0.05)),
+    ];
+    for (nome, fai) in azioni {
+        let azione = gio::SimpleAction::new(nome, None);
+        let (w, s) = (finestra.clone(), stato.clone());
+        azione.connect_activate(move |_, _| {
+            if !sta_scrivendo(&w) {
+                fai(&mut s.borrow_mut());
+            }
+        });
+        finestra.add_action(&azione);
+    }
+}
+
 /// Il pulsante con il menu: Preferenze e Informazioni.
 fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     let preferenze = gio::SimpleAction::new("preferenze", None);
@@ -932,9 +969,7 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     cestina.connect_activate(move |_, _| {
         // Se stai scrivendo (per esempio l'indirizzo di una radio), Canc cancella
         // il testo e basta: non deve mai finire un brano nel Cestino per sbaglio.
-        let scrivendo = gtk::prelude::GtkWindowExt::focus(&w)
-            .is_some_and(|f| f.type_().is_a(gtk::Editable::static_type()));
-        if !scrivendo {
+        if !sta_scrivendo(&w) {
             s.borrow_mut().cestina_corrente();
         }
     });
@@ -1000,10 +1035,22 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     let barra = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 1.0);
     barra.set_draw_value(false);
 
-    let indietro = pulsante("media-skip-backward-symbolic", t(Testo::Indietro));
-    let pulsante_play = pulsante("media-playback-start-symbolic", t(Testo::PlayPausa));
-    let ferma = pulsante("media-playback-stop-symbolic", t(Testo::Stop));
-    let avanti = pulsante("media-skip-forward-symbolic", t(Testo::Avanti));
+    let indietro = pulsante(
+        "media-skip-backward-symbolic",
+        &format!("{} (Ctrl+←)", t(Testo::Indietro)),
+    );
+    let pulsante_play = pulsante(
+        "media-playback-start-symbolic",
+        &format!("{} ({})", t(Testo::PlayPausa), t(Testo::TastoSpazio)),
+    );
+    let ferma = pulsante(
+        "media-playback-stop-symbolic",
+        &format!("{} (Ctrl+.)", t(Testo::Stop)),
+    );
+    let avanti = pulsante(
+        "media-skip-forward-symbolic",
+        &format!("{} (Ctrl+→)", t(Testo::Avanti)),
+    );
 
     let volume = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.05);
     volume.set_draw_value(false);
@@ -1028,6 +1075,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         tempo,
         barra: barra.clone(),
         pulsante_play: pulsante_play.clone(),
+        volume: volume.clone(),
         dettagli,
         qualita: Qualita::default(),
         impostazioni,
@@ -1075,6 +1123,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         .child(&contenuto)
         .build();
     comandi.append(&pulsante_menu(&finestra, &stato));
+    azioni_lettore(&finestra, &stato);
 
     // Niente "Ingrandisci": un mini lettore a tutto schermo non ha senso.
     // La barra del titolo mostra solo Riduci e Chiudi, qualunque sia l'impostazione
@@ -1249,6 +1298,34 @@ fn main() -> glib::ExitCode {
         carica_stile();
         // Canc: sposta nel Cestino il brano in corso.
         app.set_accels_for_action("win.cestina", &["Delete"]);
+        // Comandi del lettore: scorciatoie comuni dei lettori GNOME, tasti multimediali
+        // della tastiera e, per nostalgia, i tasti dei vecchi lettori (Z X C V B).
+        for (azione, tasti) in [
+            (
+                "win.play_pausa",
+                &[
+                    "space",
+                    "<Control>space",
+                    "AudioPlay",
+                    "AudioPause",
+                    "x",
+                    "c",
+                ][..],
+            ),
+            ("win.ferma", &["<Control>period", "AudioStop", "v"][..]),
+            (
+                "win.avanti",
+                &["<Control>Right", "<Alt>Right", "AudioNext", "b"][..],
+            ),
+            (
+                "win.indietro",
+                &["<Control>Left", "<Alt>Left", "AudioPrev", "z"][..],
+            ),
+            ("win.volume_su", &["<Control>Up"][..]),
+            ("win.volume_giu", &["<Control>Down"][..]),
+        ] {
+            app.set_accels_for_action(azione, tasti);
+        }
     });
 
     let finestra: Rc<RefCell<Option<Finestra>>> = Rc::new(RefCell::new(None));

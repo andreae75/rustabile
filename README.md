@@ -15,6 +15,20 @@ Un mini lettore musicale per GNOME, scritto in Rust: le funzioni di base dei let
 
 Formati: quelli che GStreamer sa leggere sul sistema (MP3, FLAC, Ogg, Opus, M4A/AAC, WAV…). Le playlist online si leggono tramite GIO, quindi serve `gvfs` (presente di serie su GNOME).
 
+## Scorciatoie
+
+| Azione | Tasti |
+|---|---|
+| Play / pausa | Spazio, Ctrl+Spazio, tasto Play |
+| Stop | Ctrl+. (punto), tasto Stop |
+| Brano successivo | Ctrl+→, Alt+→, tasto Avanti |
+| Brano precedente | Ctrl+←, Alt+←, tasto Indietro |
+| Volume su / giù | Ctrl+↑ / Ctrl+↓ |
+| Sposta il brano nel Cestino | Canc |
+| Come i lettori di una volta | Z indietro · X play · C pausa · V stop · B avanti |
+
+Valgono quando la finestra di Rustabile è attiva; mentre scrivi in un campo di testo i tasti restano al testo. I tasti multimediali della tastiera a finestra non attiva richiedono MPRIS (vedi sotto).
+
 ## Compilare
 
 Servono Rust e le librerie di sviluppo di GTK4 e GStreamer. Su Ubuntu:
@@ -42,7 +56,7 @@ Con `./installa.sh --predefinito` diventa anche il lettore predefinito per i fil
 - Leggere titolo, artista e copertina dai tag (crate `lofty`) invece di usare il nome del file.
 - Riordinare e togliere brani dalla playlist.
 - Aprire i file passati da riga di comando o con "Apri con" di Nautilus (`ApplicationFlags::HANDLES_OPEN`).
-- Comandi multimediali di GNOME e tasti della tastiera via MPRIS (crate `mpris-server`).
+- Comandi multimediali di GNOME e tasti della tastiera anche a finestra non attiva, via MPRIS (crate `mpris-server`).
 - Ripetizione e ordine casuale.
 
 ## Icona

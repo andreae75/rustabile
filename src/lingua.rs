@@ -69,6 +69,7 @@ pub enum Testo {
     Menu,
     Preferenze,
     Informazioni,
+    TastoSpazio,
     Cestina,
     SpostatoNelCestino,
     ErroreCestino,
@@ -205,6 +206,13 @@ pub fn t(testo: Testo) -> &'static str {
             De => "Verschieben in den Papierkorb nicht möglich:",
             Es => "No se pudo mover a la papelera:",
             Fr => "Impossible de mettre à la corbeille :",
+        },
+        TastoSpazio => match l {
+            It => "Spazio",
+            En => "Space",
+            De => "Leertaste",
+            Es => "Espacio",
+            Fr => "Espace",
         },
         Informazioni => match l {
             It => "Informazioni su Rustabile",
