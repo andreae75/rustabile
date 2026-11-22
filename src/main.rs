@@ -50,6 +50,8 @@ struct Stato {
     elenco: gtk::StringList,
     vista: gtk::ListView,
     segno: Rc<Segno>,
+    /// Fino a quando la riga piccola mostra un avviso invece dei dettagli.
+    avviso_fino: Option<std::time::Instant>,
     conteggio: gtk::Label,
     /// Finché esiste, GStreamer ci consegna i suoi messaggi (fine brano, errori, tag).
     _guardia_bus: Option<gst::bus::BusWatchGuard>,
@@ -336,6 +338,53 @@ impl Stato {
         }
     }
 
+    /// Sposta nel Cestino il file del brano in corso (si può recuperare dal Cestino),
+    /// lo toglie dalla playlist e passa al brano successivo.
+    /// Una radio non è un file: la togliamo solo dalla playlist.
+    fn cestina_corrente(&mut self) {
+        let Some(i) = self.corrente else { return };
+        let file = gio::File::for_uri(&self.playlist[i].uri);
+        let nome = self.playlist[i].nome.clone();
+
+        // Fermiamo la riproduzione prima, così il file non è più in uso.
+        let _ = self.playbin.set_state(gst::State::Null);
+        if file.path().is_some() {
+            if let Err(errore) = file.trash(gio::Cancellable::NONE) {
+                // Non spostato (per esempio un disco senza Cestino): riprende a suonare.
+                let _ = self.playbin.set_state(gst::State::Playing);
+                self.avviso(&format!("{} {errore}", t(Testo::ErroreCestino)));
+                return;
+            }
+        }
+
+        self.playlist.remove(i);
+        self.corrente = None;
+        self.segno.corrente.set(None);
+        // Le righe dopo quella tolta cambiano numero: le riscriviamo tutte.
+        let testi: Vec<String> = (i..self.playlist.len())
+            .map(|j| self.testo_riga(j))
+            .collect();
+        let testi: Vec<&str> = testi.iter().map(String::as_str).collect();
+        self.elenco
+            .splice(i as u32, self.elenco.n_items() - i as u32, &testi);
+        self.aggiorna_conteggio();
+
+        if i < self.playlist.len() {
+            self.suona(i);
+        } else {
+            self.ferma();
+            self.titolo.set_label(t(Testo::TrascinaQui));
+        }
+        self.avviso(&format!("{} {nome}", t(Testo::SpostatoNelCestino)));
+    }
+
+    /// Un messaggio nella riga piccola, che resta per qualche secondo
+    /// prima che torni la riga con formato e qualità.
+    fn avviso(&mut self, testo: &str) {
+        self.dettagli.set_label(testo);
+        self.avviso_fino = Some(std::time::Instant::now() + Duration::from_secs(4));
+    }
+
     fn svuota(&mut self) {
         self.ferma();
         self.playlist.clear();
@@ -404,7 +453,11 @@ impl Stato {
     /// Compone la riga dei dettagli: formato, bit, frequenza, canali, bitrate.
     /// Frequenza, canali e bit li leggiamo dall'audio già decodificato.
     fn aggiorna_dettagli(&self, durata: Option<gst::ClockTime>) {
-        if self.corrente.is_none() {
+        if self.corrente.is_none()
+            || self
+                .avviso_fino
+                .is_some_and(|fino| std::time::Instant::now() < fino)
+        {
             return;
         }
         let q = &self.qualita;
@@ -873,9 +926,28 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     informazioni.connect_activate(move |_, _| mostra_informazioni(&w));
     finestra.add_action(&informazioni);
 
+    // Sposta nel Cestino il brano in corso: anche col tasto Canc (vedi `main`).
+    let cestina = gio::SimpleAction::new("cestina", None);
+    let (w, s) = (finestra.clone(), stato.clone());
+    cestina.connect_activate(move |_, _| {
+        // Se stai scrivendo (per esempio l'indirizzo di una radio), Canc cancella
+        // il testo e basta: non deve mai finire un brano nel Cestino per sbaglio.
+        let scrivendo = gtk::prelude::GtkWindowExt::focus(&w)
+            .is_some_and(|f| f.type_().is_a(gtk::Editable::static_type()));
+        if !scrivendo {
+            s.borrow_mut().cestina_corrente();
+        }
+    });
+    finestra.add_action(&cestina);
+
     let modello = gio::Menu::new();
-    modello.append(Some(t(Testo::Preferenze)), Some("win.preferenze"));
-    modello.append(Some(t(Testo::Informazioni)), Some("win.informazioni"));
+    let brano = gio::Menu::new();
+    brano.append(Some(t(Testo::Cestina)), Some("win.cestina"));
+    modello.append_section(None, &brano);
+    let generale = gio::Menu::new();
+    generale.append(Some(t(Testo::Preferenze)), Some("win.preferenze"));
+    generale.append(Some(t(Testo::Informazioni)), Some("win.informazioni"));
+    modello.append_section(None, &generale);
 
     let menu = gtk::MenuButton::new();
     menu.set_icon_name("open-menu-symbolic");
@@ -962,6 +1034,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         elenco: elenco.clone(),
         vista: crea_vista_playlist(&elenco, &segno),
         segno: segno.clone(),
+        avviso_fino: None,
         conteggio: gtk::Label::new(None),
         _guardia_bus: None,
     }));
@@ -1172,7 +1245,11 @@ fn main() -> glib::ExitCode {
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
-    app.connect_startup(|_| carica_stile());
+    app.connect_startup(|app| {
+        carica_stile();
+        // Canc: sposta nel Cestino il brano in corso.
+        app.set_accels_for_action("win.cestina", &["Delete"]);
+    });
 
     let finestra: Rc<RefCell<Option<Finestra>>> = Rc::new(RefCell::new(None));
     let ottieni = {

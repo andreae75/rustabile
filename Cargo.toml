@@ -1,6 +1,6 @@
 [package]
 name = "rustabile"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 description = "Un mini lettore musicale per GNOME, semplice come i lettori di una volta"
 license = "MIT"
