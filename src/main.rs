@@ -1003,6 +1003,18 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         .build();
     comandi.append(&pulsante_menu(&finestra, &stato));
 
+    // Niente "Ingrandisci": un mini lettore a tutto schermo non ha senso.
+    // La barra del titolo mostra solo Riduci e Chiudi, qualunque sia l'impostazione
+    // di GNOME; e se lo si ingrandisce lo stesso (doppio clic, Super+Su) torna com'era.
+    let barra_titolo = gtk::HeaderBar::new();
+    barra_titolo.set_decoration_layout(Some(":minimize,close"));
+    finestra.set_titlebar(Some(&barra_titolo));
+    finestra.connect_maximized_notify(|w| {
+        if w.is_maximized() {
+            w.unmaximize();
+        }
+    });
+
     // Aprendo il pannello la finestra si allunga; chiudendolo torna compatta.
     let (t, w, s) = (tendina.clone(), finestra.clone(), stato.clone());
     mostra_playlist.connect_toggled(move |b| {
