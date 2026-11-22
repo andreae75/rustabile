@@ -99,8 +99,6 @@ impl Qualita {
 /// Le preferenze, salvate in `~/.config/rustabile/impostazioni.ini`
 /// con il `KeyFile` di GLib (lo stesso formato dei file .desktop).
 struct Impostazioni {
-    /// Finestra sempre sopra le altre (con Xwayland, vale dalla prossima apertura).
-    sempre_sopra: bool,
     /// Trascinando file nella finestra: suonano subito (vero) o vanno in coda (falso).
     trascina_suona: bool,
     /// Il pannello playlist era aperto all'ultima chiusura.
@@ -123,7 +121,6 @@ impl Impostazioni {
         let kf = glib::KeyFile::new();
         let _ = kf.load_from_file(Self::percorso(), glib::KeyFileFlags::NONE);
         Impostazioni {
-            sempre_sopra: kf.boolean(Self::GRUPPO, "sempre_sopra").unwrap_or(false),
             trascina_suona: kf.boolean(Self::GRUPPO, "trascina_suona").unwrap_or(true),
             mostra_playlist: kf.boolean(Self::GRUPPO, "mostra_playlist").unwrap_or(false),
             lingua: kf
@@ -136,7 +133,6 @@ impl Impostazioni {
 
     fn salva(&self) {
         let kf = glib::KeyFile::new();
-        kf.set_boolean(Self::GRUPPO, "sempre_sopra", self.sempre_sopra);
         kf.set_boolean(Self::GRUPPO, "trascina_suona", self.trascina_suona);
         kf.set_boolean(Self::GRUPPO, "mostra_playlist", self.mostra_playlist);
         kf.set_string(Self::GRUPPO, "lingua", &self.lingua);
@@ -778,11 +774,6 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
     };
 
     let imp = &stato.borrow().impostazioni;
-    let (r1, sopra) = riga(
-        t(Testo::SempreSopra),
-        t(Testo::SempreSopraSpiegazione),
-        imp.sempre_sopra,
-    );
     let (r2, trascina) = riga(
         t(Testo::TrascinaSuona),
         t(Testo::TrascinaSuonaSpiegazione),
@@ -794,16 +785,9 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
     colonna.set_margin_bottom(18);
     colonna.set_margin_start(18);
     colonna.set_margin_end(18);
-    colonna.append(&r1);
     colonna.append(&r2);
     colonna.append(&riga_lingua(stato));
 
-    let s = stato.clone();
-    sopra.connect_active_notify(move |i| {
-        let mut stato = s.borrow_mut();
-        stato.impostazioni.sempre_sopra = i.is_active();
-        stato.impostazioni.salva();
-    });
     let s = stato.clone();
     trascina.connect_active_notify(move |i| {
         let mut stato = s.borrow_mut();
@@ -899,47 +883,6 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     menu.add_css_class("flat");
     menu.set_menu_model(Some(&modello));
     menu
-}
-
-/// "Sempre in primo piano". Su Wayland un'app non può chiederlo, quindi quando
-/// l'opzione è attiva Rustabile parte con Xwayland (vedi `main`) e qui manda
-/// al window manager la richiesta X11 standard `_NET_WM_STATE_ABOVE`.
-fn metti_sopra(finestra: &gtk::ApplicationWindow) {
-    use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
-
-    let Some(superficie) = finestra.surface() else {
-        return;
-    };
-    let Ok(superficie_x11) = superficie.downcast::<gdk_x11::X11Surface>() else {
-        eprintln!("Sempre in primo piano: la finestra non usa X11, ignoro");
-        return;
-    };
-    let xid = superficie_x11.xid() as u32;
-
-    let Ok((conn, schermo)) = x11rb::connect(None) else {
-        return;
-    };
-    let radice = conn.setup().roots[schermo].root;
-    let atomo = |nome: &str| {
-        conn.intern_atom(false, nome.as_bytes())
-            .ok()?
-            .reply()
-            .ok()
-            .map(|r| r.atom)
-    };
-    let (Some(stato), Some(sopra)) = (atomo("_NET_WM_STATE"), atomo("_NET_WM_STATE_ABOVE")) else {
-        return;
-    };
-    // data: [azione 1 = aggiungi, proprietà, seconda proprietà, sorgente 1 = applicazione, 0]
-    let evento = ClientMessageEvent::new(32, xid, stato, [1u32, sopra, 0, 1, 0]);
-    let _ = conn.send_event(
-        false,
-        radice,
-        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-        evento,
-    );
-    let _ = conn.flush();
 }
 
 /// Testo trascinato (per esempio un link da un browser): una voce per riga.
@@ -1080,14 +1023,6 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         mostra_playlist.set_active(true);
     }
 
-    // Sempre in primo piano: la richiesta va fatta quando la finestra è sullo schermo.
-    if stato.borrow().impostazioni.sempre_sopra {
-        finestra.connect_map(|w| {
-            let w = w.clone();
-            glib::idle_add_local_once(move || metti_sopra(&w));
-        });
-    }
-
     // Messaggi di GStreamer: a fine brano si passa al successivo, i tag aggiornano il titolo.
     let bus = playbin.bus().expect("playbin senza bus");
     let s = stato.clone();
@@ -1216,12 +1151,6 @@ fn registra_icone(display: &gdk::Display) {
 }
 
 fn main() -> glib::ExitCode {
-    // "Sempre in primo piano" richiede X11: lo scegliamo prima che GTK si avvii.
-    // SAFETY: siamo all'inizio di main, nessun altro thread legge l'ambiente.
-    if Impostazioni::carica().sempre_sopra {
-        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
-    }
-
     gst::init().expect("impossibile inizializzare GStreamer");
 
     // HANDLES_OPEN: accettiamo file da riga di comando e da "Apri con" di Nautilus.

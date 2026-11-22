@@ -69,8 +69,6 @@ pub enum Testo {
     Menu,
     Preferenze,
     Informazioni,
-    SempreSopra,
-    SempreSopraSpiegazione,
     TrascinaSuona,
     TrascinaSuonaSpiegazione,
     Descrizione,
@@ -190,30 +188,6 @@ pub fn t(testo: Testo) -> &'static str {
             De => "Über Rustabile",
             Es => "Acerca de Rustabile",
             Fr => "À propos de Rustabile",
-        },
-        SempreSopra => match l {
-            It => "Sempre in primo piano",
-            En => "Always on top",
-            De => "Immer im Vordergrund",
-            Es => "Siempre encima",
-            Fr => "Toujours au premier plan",
-        },
-        SempreSopraSpiegazione => match l {
-            It => {
-                "Tiene la finestra sopra le altre. Su GNOME funziona solo tramite Xwayland: vale dalla prossima apertura di Rustabile."
-            }
-            En => {
-                "Keeps the window above the others. On GNOME this only works through Xwayland: it takes effect the next time Rustabile starts."
-            }
-            De => {
-                "Hält das Fenster über den anderen. Unter GNOME funktioniert das nur über Xwayland: wirksam ab dem nächsten Start von Rustabile."
-            }
-            Es => {
-                "Mantiene la ventana por encima de las demás. En GNOME solo funciona mediante Xwayland: se aplica la próxima vez que abras Rustabile."
-            }
-            Fr => {
-                "Garde la fenêtre au-dessus des autres. Sous GNOME, cela ne fonctionne que via Xwayland : prend effet au prochain lancement de Rustabile."
-            }
         },
         TrascinaSuona => match l {
             It => "Trascinando, suona subito",

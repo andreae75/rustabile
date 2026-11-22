@@ -5,7 +5,8 @@ Un mini lettore musicale per GNOME, scritto in Rust: le funzioni di base dei let
 - Trascina file, cartelle o playlist (`.m3u`, `.m3u8`, `.pls`) nella finestra per riempire la coda. Le cartelle vengono esplorate in ordine alfabetico, sottocartelle comprese.
 - Radio: il pulsante con la radiolina (icona disegnata apposta, in `data/icons`) accetta l'indirizzo di uno stream o di una playlist online, e mostra il nome della stazione e il brano in onda se la radio li trasmette. Con le radio la barra di avanzamento è grigia, perché non si può andare avanti e indietro.
 - Pannello playlist sotto la finestra (si apre e chiude col pulsante a lista): elenco dei brani, un clic per farne partire uno, conteggio e "Svuota". Regge anche playlist di migliaia di radio.
-- Menu con Preferenze (sempre in primo piano, trascinamento che suona subito o accoda) e Informazioni. Le preferenze e il volume stanno in `~/.config/rustabile/impostazioni.ini`.
+- Menu con Preferenze (trascinamento che suona subito o accoda, lingua) e Informazioni. Le preferenze e il volume stanno in `~/.config/rustabile/impostazioni.ini`.
+- Sempre in primo piano: tasto destro sul titolo della finestra (o Alt+Spazio) e "Sempre in primo piano", la funzione di GNOME che vale per ogni app.
 - Raccolte di radio per genere: incolla nel pulsante radio, o trascina dal browser, il link "raw" di una playlist come quelle di [m3u-radio-music-playlists](https://github.com/junguler/m3u-radio-music-playlists).
 - Play / pausa, stop, avanti, indietro (se il brano è avanti più di 3 secondi ricomincia), barra di avanzamento, volume.
 - Interfaccia in italiano, inglese, tedesco, spagnolo e francese: segue la lingua del desktop, oppure si sceglie nelle Preferenze. Per provarne una al volo: `RUSTABILE_LINGUA=fr rustabile`.
