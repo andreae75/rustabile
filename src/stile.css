@@ -1,0 +1,22 @@
+/* Aspetto "display da lettore di una volta". Sul resto vale il tema di GNOME. */
+
+.display {
+  background-color: #101214;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.display label {
+  font-family: monospace;
+  color: #5cf07a;
+}
+
+.display .dettagli {
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+.display .tempo {
+  font-size: 1.4em;
+  font-weight: bold;
+}
