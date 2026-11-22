@@ -9,9 +9,12 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
+mod lingua;
+
 use gst::prelude::*;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
+use lingua::{Testo, t};
 
 const APP_ID: &str = "io.github.andreae75.Rustabile";
 
@@ -102,6 +105,8 @@ struct Impostazioni {
     trascina_suona: bool,
     /// Il pannello playlist era aperto all'ultima chiusura.
     mostra_playlist: bool,
+    /// Lingua dell'interfaccia: "auto" (quella del desktop) o "it", "en", "de", "es", "fr".
+    lingua: String,
     volume: f64,
 }
 
@@ -121,6 +126,10 @@ impl Impostazioni {
             sempre_sopra: kf.boolean(Self::GRUPPO, "sempre_sopra").unwrap_or(false),
             trascina_suona: kf.boolean(Self::GRUPPO, "trascina_suona").unwrap_or(true),
             mostra_playlist: kf.boolean(Self::GRUPPO, "mostra_playlist").unwrap_or(false),
+            lingua: kf
+                .string(Self::GRUPPO, "lingua")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "auto".into()),
             volume: kf.double(Self::GRUPPO, "volume").unwrap_or(0.8),
         }
     }
@@ -130,6 +139,7 @@ impl Impostazioni {
         kf.set_boolean(Self::GRUPPO, "sempre_sopra", self.sempre_sopra);
         kf.set_boolean(Self::GRUPPO, "trascina_suona", self.trascina_suona);
         kf.set_boolean(Self::GRUPPO, "mostra_playlist", self.mostra_playlist);
+        kf.set_string(Self::GRUPPO, "lingua", &self.lingua);
         kf.set_double(Self::GRUPPO, "volume", self.volume);
         let percorso = Self::percorso();
         if let Some(cartella) = percorso.parent() {
@@ -153,9 +163,9 @@ fn khz(hz: i32) -> String {
 
 fn canali(n: i32) -> String {
     match n {
-        1 => "mono".into(),
-        2 => "stereo".into(),
-        n => format!("{n} canali"),
+        1 => t(Testo::Mono).into(),
+        2 => t(Testo::Stereo).into(),
+        n => lingua::canali_n(n),
     }
 }
 
@@ -254,11 +264,7 @@ impl Stato {
 
     fn aggiorna_conteggio(&self) {
         let n = self.playlist.len();
-        self.conteggio.set_label(&match n {
-            0 => "Playlist vuota".to_string(),
-            1 => "1 brano".to_string(),
-            n => format!("{n} brani"),
-        });
+        self.conteggio.set_label(&lingua::brani(n));
     }
 
     fn sta_suonando(&self) -> bool {
@@ -341,8 +347,7 @@ impl Stato {
         self.aggiorna_conteggio();
         self.corrente = None;
         self.segno.corrente.set(None);
-        self.titolo
-            .set_label("Trascina qui musica, cartelle o playlist");
+        self.titolo.set_label(t(Testo::TrascinaQui));
         self.dettagli.set_label("");
     }
 
@@ -602,10 +607,10 @@ fn pulsante(icona: &str, descrizione: &str) -> gtk::Button {
 /// (o di una playlist online .m3u/.pls).
 fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     let campo = gtk::Entry::new();
-    campo.set_placeholder_text(Some("https://… indirizzo della radio"));
+    campo.set_placeholder_text(Some(t(Testo::IndirizzoRadio)));
     campo.set_width_chars(32);
 
-    let aggiungi = gtk::Button::with_label("Ascolta");
+    let aggiungi = gtk::Button::with_label(t(Testo::Ascolta));
     aggiungi.add_css_class("suggested-action");
 
     let riga = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -617,7 +622,7 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
 
     let menu = gtk::MenuButton::new();
     menu.set_icon_name("rustabile-radio-symbolic");
-    menu.set_tooltip_text(Some("Aggiungi una radio"));
+    menu.set_tooltip_text(Some(t(Testo::AggiungiRadio)));
     menu.add_css_class("flat");
     menu.set_popover(Some(&riquadro));
 
@@ -727,7 +732,7 @@ fn pannello_playlist(stato: &Rc<RefCell<Stato>>) -> gtk::Box {
     scorrimento.set_vexpand(true);
     scorrimento.set_has_frame(true);
 
-    let svuota = gtk::Button::with_label("Svuota");
+    let svuota = gtk::Button::with_label(t(Testo::Svuota));
     svuota.add_css_class("flat");
     let st = stato.clone();
     svuota.connect_clicked(move |_| st.borrow_mut().svuota());
@@ -774,15 +779,13 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
 
     let imp = &stato.borrow().impostazioni;
     let (r1, sopra) = riga(
-        "Sempre in primo piano",
-        "Tiene la finestra sopra le altre. Su GNOME funziona solo tramite Xwayland: \
-         vale dalla prossima apertura di Rustabile.",
+        t(Testo::SempreSopra),
+        t(Testo::SempreSopraSpiegazione),
         imp.sempre_sopra,
     );
     let (r2, trascina) = riga(
-        "Trascinando, suona subito",
-        "Se è spento, i file trascinati vanno in fondo alla playlist senza interrompere \
-         il brano in corso.",
+        t(Testo::TrascinaSuona),
+        t(Testo::TrascinaSuonaSpiegazione),
         imp.trascina_suona,
     );
 
@@ -793,6 +796,7 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
     colonna.set_margin_end(18);
     colonna.append(&r1);
     colonna.append(&r2);
+    colonna.append(&riga_lingua(stato));
 
     let s = stato.clone();
     sopra.connect_active_notify(move |i| {
@@ -808,7 +812,7 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
     });
 
     gtk::Window::builder()
-        .title("Preferenze")
+        .title(t(Testo::Preferenze))
         .transient_for(finestra)
         .modal(true)
         .resizable(false)
@@ -817,13 +821,54 @@ fn mostra_preferenze(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato
         .present();
 }
 
+/// Scelta della lingua: "Automatica" segue il desktop. Vale dalla prossima apertura.
+fn riga_lingua(stato: &Rc<RefCell<Stato>>) -> gtk::Box {
+    const CODICI: [&str; 6] = ["auto", "it", "en", "de", "es", "fr"];
+    let nomi = [
+        t(Testo::LinguaAutomatica),
+        "Italiano",
+        "English",
+        "Deutsch",
+        "Español",
+        "Français",
+    ];
+    let scelta = gtk::DropDown::from_strings(&nomi);
+    let attuale = stato.borrow().impostazioni.lingua.clone();
+    let indice = CODICI.iter().position(|c| *c == attuale).unwrap_or(0);
+    scelta.set_selected(indice as u32);
+    scelta.set_valign(gtk::Align::Center);
+
+    let s = stato.clone();
+    scelta.connect_selected_notify(move |d| {
+        let mut stato = s.borrow_mut();
+        stato.impostazioni.lingua = CODICI[d.selected() as usize].to_string();
+        stato.impostazioni.salva();
+    });
+
+    let testi = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    testi.set_hexpand(true);
+    let titolo = gtk::Label::new(Some(t(Testo::TitoloLingua)));
+    titolo.set_xalign(0.0);
+    let nota = gtk::Label::new(Some(t(Testo::LinguaSpiegazione)));
+    nota.set_xalign(0.0);
+    nota.add_css_class("dim-label");
+    nota.add_css_class("caption");
+    testi.append(&titolo);
+    testi.append(&nota);
+
+    let riga = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    riga.append(&testi);
+    riga.append(&scelta);
+    riga
+}
+
 fn mostra_informazioni(finestra: &gtk::ApplicationWindow) {
     gtk::AboutDialog::builder()
         .transient_for(finestra)
         .modal(true)
         .program_name("Rustabile")
         .version(env!("CARGO_PKG_VERSION"))
-        .comments("Un mini lettore musicale per GNOME, semplice come i lettori di una volta.\nScritto in Rust con GTK4 e GStreamer.")
+        .comments(t(Testo::Descrizione))
         .logo_icon_name("audio-x-generic")
         .authors(["andreae75"])
         .license_type(gtk::License::MitX11)
@@ -844,12 +889,12 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     finestra.add_action(&informazioni);
 
     let modello = gio::Menu::new();
-    modello.append(Some("Preferenze"), Some("win.preferenze"));
-    modello.append(Some("Informazioni su Rustabile"), Some("win.informazioni"));
+    modello.append(Some(t(Testo::Preferenze)), Some("win.preferenze"));
+    modello.append(Some(t(Testo::Informazioni)), Some("win.informazioni"));
 
     let menu = gtk::MenuButton::new();
     menu.set_icon_name("open-menu-symbolic");
-    menu.set_tooltip_text(Some("Menu"));
+    menu.set_tooltip_text(Some(t(Testo::Menu)));
     menu.add_css_class("flat");
     menu.set_menu_model(Some(&modello));
     menu
@@ -917,7 +962,7 @@ type Finestra = (gtk::ApplicationWindow, Rc<RefCell<Stato>>);
 
 fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     // --- Widget -----------------------------------------------------------
-    let titolo = gtk::Label::new(Some("Trascina qui musica, cartelle o playlist"));
+    let titolo = gtk::Label::new(Some(t(Testo::TrascinaQui)));
     titolo.set_ellipsize(gtk::pango::EllipsizeMode::End);
     titolo.set_xalign(0.0);
 
@@ -939,17 +984,17 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     let barra = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 1.0);
     barra.set_draw_value(false);
 
-    let indietro = pulsante("media-skip-backward-symbolic", "Indietro");
-    let pulsante_play = pulsante("media-playback-start-symbolic", "Play / Pausa");
-    let ferma = pulsante("media-playback-stop-symbolic", "Stop");
-    let avanti = pulsante("media-skip-forward-symbolic", "Avanti");
+    let indietro = pulsante("media-skip-backward-symbolic", t(Testo::Indietro));
+    let pulsante_play = pulsante("media-playback-start-symbolic", t(Testo::PlayPausa));
+    let ferma = pulsante("media-playback-stop-symbolic", t(Testo::Stop));
+    let avanti = pulsante("media-skip-forward-symbolic", t(Testo::Avanti));
 
     let volume = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.05);
     volume.set_draw_value(false);
     let impostazioni = Impostazioni::carica();
     volume.set_value(impostazioni.volume);
     volume.set_hexpand(true);
-    volume.set_tooltip_text(Some("Volume"));
+    volume.set_tooltip_text(Some(t(Testo::Volume)));
 
     // --- Motore audio ---------------------------------------------------------
     let playbin = gst::ElementFactory::make("playbin")
@@ -981,7 +1026,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     // Pannello playlist sotto i comandi, che si apre e chiude con un pulsante.
     let mostra_playlist = gtk::ToggleButton::new();
     mostra_playlist.set_icon_name("view-list-symbolic");
-    mostra_playlist.set_tooltip_text(Some("Mostra la playlist"));
+    mostra_playlist.set_tooltip_text(Some(t(Testo::MostraPlaylist)));
     mostra_playlist.add_css_class("flat");
     let tendina = gtk::Revealer::new();
     tendina.set_transition_type(gtk::RevealerTransitionType::SlideDown);

@@ -1,12 +1,24 @@
 [Desktop Entry]
 Type=Application
 Name=Rustabile
-GenericName=Lettore musicale
-Comment=Mini lettore musicale: file, cartelle, playlist e radio
+GenericName=Music Player
+GenericName[it]=Lettore musicale
+GenericName[de]=Musikwiedergabe
+GenericName[es]=Reproductor de música
+GenericName[fr]=Lecteur de musique
+Comment=Tiny music player: files, folders, playlists and radio
+Comment[it]=Mini lettore musicale: file, cartelle, playlist e radio
+Comment[de]=Kleiner Musikspieler: Dateien, Ordner, Wiedergabelisten und Radio
+Comment[es]=Pequeño reproductor: archivos, carpetas, listas y radio
+Comment[fr]=Petit lecteur de musique : fichiers, dossiers, listes et radio
 Exec=rustabile %U
 Icon=audio-x-generic
 Terminal=false
 Categories=AudioVideo;Audio;Player;GTK;
-Keywords=musica;mp3;flac;radio;playlist;
+Keywords=music;mp3;flac;radio;playlist;
+Keywords[it]=musica;mp3;flac;radio;playlist;
+Keywords[de]=Musik;mp3;flac;Radio;Wiedergabeliste;
+Keywords[es]=música;mp3;flac;radio;lista;
+Keywords[fr]=musique;mp3;flac;radio;liste;
 MimeType=audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/x-opus+ogg;audio/mp4;audio/aac;audio/x-m4a;audio/x-wav;audio/wav;audio/x-ms-wma;audio/x-mpegurl;audio/mpegurl;application/vnd.apple.mpegurl;audio/x-scpls;
 StartupNotify=true

@@ -8,6 +8,7 @@ Un mini lettore musicale per GNOME, scritto in Rust: le funzioni di base dei let
 - Menu con Preferenze (sempre in primo piano, trascinamento che suona subito o accoda) e Informazioni. Le preferenze e il volume stanno in `~/.config/rustabile/impostazioni.ini`.
 - Raccolte di radio per genere: incolla nel pulsante radio, o trascina dal browser, il link "raw" di una playlist come quelle di [m3u-radio-music-playlists](https://github.com/junguler/m3u-radio-music-playlists).
 - Play / pausa, stop, avanti, indietro (se il brano è avanti più di 3 secondi ricomincia), barra di avanzamento, volume.
+- Interfaccia in italiano, inglese, tedesco, spagnolo e francese: segue la lingua del desktop, oppure si sceglie nelle Preferenze. Per provarne una al volo: `RUSTABILE_LINGUA=fr rustabile`.
 - GTK4 puro, quindi prende il tema di GNOME; l'audio passa da GStreamer, lo stesso motore degli altri lettori di GNOME.
 
 Formati: quelli che GStreamer sa leggere sul sistema (MP3, FLAC, Ogg, Opus, M4A/AAC, WAV…). Le playlist online si leggono tramite GIO, quindi serve `gvfs` (presente di serie su GNOME).

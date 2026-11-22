@@ -1,0 +1,330 @@
+//! Traduzioni dell'interfaccia: italiano, inglese, tedesco, spagnolo, francese.
+//!
+//! Per un programma piccolo basta una tabella nel codice: niente file .po da
+//! installare. La lingua si sceglie da quella del desktop (variabili LANGUAGE,
+//! LC_ALL, LANG lette da GLib), a meno che nelle Preferenze se ne sia scelta una;
+//! se non è una delle cinque si usa l'inglese.
+//! Per provarne un'altra: `RUSTABILE_LINGUA=de rustabile`.
+
+use std::sync::OnceLock;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Lingua {
+    It,
+    En,
+    De,
+    Es,
+    Fr,
+}
+
+impl Lingua {
+    fn da_codice(codice: &str) -> Option<Self> {
+        match codice.get(..2)?.to_ascii_lowercase().as_str() {
+            "it" => Some(Lingua::It),
+            "en" => Some(Lingua::En),
+            "de" => Some(Lingua::De),
+            "es" => Some(Lingua::Es),
+            "fr" => Some(Lingua::Fr),
+            _ => None,
+        }
+    }
+}
+
+/// La lingua scelta, calcolata una volta sola al primo uso.
+pub fn lingua() -> Lingua {
+    static LINGUA: OnceLock<Lingua> = OnceLock::new();
+    *LINGUA.get_or_init(|| {
+        if let Some(l) = std::env::var("RUSTABILE_LINGUA")
+            .ok()
+            .and_then(|v| Lingua::da_codice(&v))
+        {
+            return l;
+        }
+        // Poi la scelta fatta nelle Preferenze, se non è "Automatica".
+        if let Some(l) = Lingua::da_codice(&crate::Impostazioni::carica().lingua) {
+            return l;
+        }
+        gtk::glib::language_names()
+            .iter()
+            .find_map(|nome| Lingua::da_codice(nome))
+            .unwrap_or(Lingua::En)
+    })
+}
+
+/// Ogni testo dell'interfaccia ha una voce qui.
+#[derive(Clone, Copy)]
+pub enum Testo {
+    TrascinaQui,
+    IndirizzoRadio,
+    Ascolta,
+    AggiungiRadio,
+    Svuota,
+    PlaylistVuota,
+    MostraPlaylist,
+    Indietro,
+    PlayPausa,
+    Stop,
+    Avanti,
+    Volume,
+    Menu,
+    Preferenze,
+    Informazioni,
+    SempreSopra,
+    SempreSopraSpiegazione,
+    TrascinaSuona,
+    TrascinaSuonaSpiegazione,
+    Descrizione,
+    Mono,
+    Stereo,
+    TitoloLingua,
+    LinguaAutomatica,
+    LinguaSpiegazione,
+}
+
+pub fn t(testo: Testo) -> &'static str {
+    use Lingua::*;
+    use Testo::*;
+    let l = lingua();
+    match testo {
+        TrascinaQui => match l {
+            It => "Trascina qui musica, cartelle o playlist",
+            En => "Drop music, folders or playlists here",
+            De => "Musik, Ordner oder Wiedergabelisten hierher ziehen",
+            Es => "Arrastra aquí música, carpetas o listas",
+            Fr => "Déposez ici musique, dossiers ou listes de lecture",
+        },
+        IndirizzoRadio => match l {
+            It => "https://… indirizzo della radio",
+            En => "https://… radio stream address",
+            De => "https://… Adresse des Radiosenders",
+            Es => "https://… dirección de la radio",
+            Fr => "https://… adresse de la radio",
+        },
+        Ascolta => match l {
+            It => "Ascolta",
+            En => "Listen",
+            De => "Anhören",
+            Es => "Escuchar",
+            Fr => "Écouter",
+        },
+        AggiungiRadio => match l {
+            It => "Aggiungi una radio",
+            En => "Add a radio station",
+            De => "Radiosender hinzufügen",
+            Es => "Añadir una radio",
+            Fr => "Ajouter une radio",
+        },
+        Svuota => match l {
+            It => "Svuota",
+            En => "Clear",
+            De => "Leeren",
+            Es => "Vaciar",
+            Fr => "Vider",
+        },
+        PlaylistVuota => match l {
+            It => "Playlist vuota",
+            En => "Empty playlist",
+            De => "Wiedergabeliste leer",
+            Es => "Lista vacía",
+            Fr => "Liste vide",
+        },
+        MostraPlaylist => match l {
+            It => "Mostra la playlist",
+            En => "Show the playlist",
+            De => "Wiedergabeliste anzeigen",
+            Es => "Mostrar la lista",
+            Fr => "Afficher la liste de lecture",
+        },
+        Indietro => match l {
+            It => "Indietro",
+            En => "Previous",
+            De => "Zurück",
+            Es => "Anterior",
+            Fr => "Précédent",
+        },
+        PlayPausa => match l {
+            It => "Play / Pausa",
+            En => "Play / Pause",
+            De => "Wiedergabe / Pause",
+            Es => "Reproducir / Pausa",
+            Fr => "Lecture / Pause",
+        },
+        Stop => match l {
+            It => "Stop",
+            En => "Stop",
+            De => "Stopp",
+            Es => "Detener",
+            Fr => "Arrêt",
+        },
+        Avanti => match l {
+            It => "Avanti",
+            En => "Next",
+            De => "Weiter",
+            Es => "Siguiente",
+            Fr => "Suivant",
+        },
+        Volume => match l {
+            It => "Volume",
+            En => "Volume",
+            De => "Lautstärke",
+            Es => "Volumen",
+            Fr => "Volume",
+        },
+        Menu => match l {
+            It => "Menu",
+            En => "Menu",
+            De => "Menü",
+            Es => "Menú",
+            Fr => "Menu",
+        },
+        Preferenze => match l {
+            It => "Preferenze",
+            En => "Preferences",
+            De => "Einstellungen",
+            Es => "Preferencias",
+            Fr => "Préférences",
+        },
+        Informazioni => match l {
+            It => "Informazioni su Rustabile",
+            En => "About Rustabile",
+            De => "Über Rustabile",
+            Es => "Acerca de Rustabile",
+            Fr => "À propos de Rustabile",
+        },
+        SempreSopra => match l {
+            It => "Sempre in primo piano",
+            En => "Always on top",
+            De => "Immer im Vordergrund",
+            Es => "Siempre encima",
+            Fr => "Toujours au premier plan",
+        },
+        SempreSopraSpiegazione => match l {
+            It => {
+                "Tiene la finestra sopra le altre. Su GNOME funziona solo tramite Xwayland: vale dalla prossima apertura di Rustabile."
+            }
+            En => {
+                "Keeps the window above the others. On GNOME this only works through Xwayland: it takes effect the next time Rustabile starts."
+            }
+            De => {
+                "Hält das Fenster über den anderen. Unter GNOME funktioniert das nur über Xwayland: wirksam ab dem nächsten Start von Rustabile."
+            }
+            Es => {
+                "Mantiene la ventana por encima de las demás. En GNOME solo funciona mediante Xwayland: se aplica la próxima vez que abras Rustabile."
+            }
+            Fr => {
+                "Garde la fenêtre au-dessus des autres. Sous GNOME, cela ne fonctionne que via Xwayland : prend effet au prochain lancement de Rustabile."
+            }
+        },
+        TrascinaSuona => match l {
+            It => "Trascinando, suona subito",
+            En => "Play dropped files right away",
+            De => "Abgelegte Dateien sofort abspielen",
+            Es => "Reproducir al arrastrar",
+            Fr => "Lire aussitôt les fichiers déposés",
+        },
+        TrascinaSuonaSpiegazione => match l {
+            It => {
+                "Se è spento, i file trascinati vanno in fondo alla playlist senza interrompere il brano in corso."
+            }
+            En => {
+                "When off, dropped files are added to the end of the playlist without interrupting the current track."
+            }
+            De => {
+                "Wenn aus, werden abgelegte Dateien ans Ende der Wiedergabeliste gestellt, ohne den aktuellen Titel zu unterbrechen."
+            }
+            Es => {
+                "Si está desactivado, los archivos arrastrados se añaden al final de la lista sin interrumpir la canción actual."
+            }
+            Fr => {
+                "Si désactivé, les fichiers déposés sont ajoutés à la fin de la liste sans interrompre le morceau en cours."
+            }
+        },
+        Descrizione => match l {
+            It => {
+                "Un mini lettore musicale per GNOME, semplice come i lettori di una volta.\nScritto in Rust con GTK4 e GStreamer."
+            }
+            En => {
+                "A tiny music player for GNOME, as simple as the players of the old days.\nWritten in Rust with GTK4 and GStreamer."
+            }
+            De => {
+                "Ein kleiner Musikspieler für GNOME, so einfach wie die Player von früher.\nGeschrieben in Rust mit GTK4 und GStreamer."
+            }
+            Es => {
+                "Un pequeño reproductor de música para GNOME, sencillo como los de antes.\nEscrito en Rust con GTK4 y GStreamer."
+            }
+            Fr => {
+                "Un petit lecteur de musique pour GNOME, simple comme les lecteurs d'antan.\nÉcrit en Rust avec GTK4 et GStreamer."
+            }
+        },
+        TitoloLingua => match l {
+            It => "Lingua",
+            En => "Language",
+            De => "Sprache",
+            Es => "Idioma",
+            Fr => "Langue",
+        },
+        LinguaAutomatica => match l {
+            It => "Automatica",
+            En => "Automatic",
+            De => "Automatisch",
+            Es => "Automático",
+            Fr => "Automatique",
+        },
+        LinguaSpiegazione => match l {
+            It => "Vale dalla prossima apertura.",
+            En => "Takes effect the next time Rustabile starts.",
+            De => "Wirksam ab dem nächsten Start.",
+            Es => "Se aplica la próxima vez que abras Rustabile.",
+            Fr => "Prend effet au prochain lancement.",
+        },
+        Mono => "mono",
+        Stereo => match l {
+            Es => "estéreo",
+            Fr => "stéréo",
+            _ => "stereo",
+        },
+    }
+}
+
+/// "12 brani", "12 tracks", "12 Titel"…
+pub fn brani(n: usize) -> String {
+    use Lingua::*;
+    let l = lingua();
+    match (l, n) {
+        (_, 0) => t(Testo::PlaylistVuota).to_string(),
+        (It, 1) => "1 brano".into(),
+        (It, n) => format!("{n} brani"),
+        (En, 1) => "1 track".into(),
+        (En, n) => format!("{n} tracks"),
+        (De, n) => format!("{n} Titel"),
+        (Es, 1) => "1 canción".into(),
+        (Es, n) => format!("{n} canciones"),
+        (Fr, 1) => "1 morceau".into(),
+        (Fr, n) => format!("{n} morceaux"),
+    }
+}
+
+/// "6 canali", "6 channels"…
+pub fn canali_n(n: i32) -> String {
+    match lingua() {
+        Lingua::It => format!("{n} canali"),
+        Lingua::En => format!("{n} channels"),
+        Lingua::De => format!("{n} Kanäle"),
+        Lingua::Es => format!("{n} canales"),
+        Lingua::Fr => format!("{n} canaux"),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn codici_di_lingua() {
+        assert_eq!(Lingua::da_codice("it_IT.UTF-8"), Some(Lingua::It));
+        assert_eq!(Lingua::da_codice("de"), Some(Lingua::De));
+        assert_eq!(Lingua::da_codice("fr_CA"), Some(Lingua::Fr));
+        assert_eq!(Lingua::da_codice("pt_BR"), None);
+        assert_eq!(Lingua::da_codice("C"), None);
+    }
+}
