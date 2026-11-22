@@ -872,6 +872,7 @@ fn mostra_informazioni(finestra: &gtk::ApplicationWindow) {
         .logo_icon_name(APP_ID)
         .authors(["andreae75"])
         .license_type(gtk::License::MitX11)
+        .website(env!("CARGO_PKG_REPOSITORY"))
         .build()
         .present();
 }
