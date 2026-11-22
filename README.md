@@ -24,6 +24,7 @@ Formati: quelli che GStreamer sa leggere sul sistema (MP3, FLAC, Ogg, Opus, M4A/
 | Brano successivo | Ctrl+→, Alt+→, tasto Avanti |
 | Brano precedente | Ctrl+←, Alt+←, tasto Indietro |
 | Volume su / giù | Ctrl+↑ / Ctrl+↓ |
+| Apri cartella… / Salva playlist… | Ctrl+O / Ctrl+S |
 | Sposta il brano nel Cestino | Canc |
 | Come i lettori di una volta | Z indietro · X play · C pausa · V stop · B avanti |
 

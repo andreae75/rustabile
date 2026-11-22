@@ -399,6 +399,33 @@ impl Stato {
         self.avviso(&format!("{} {nome}{da_dove}", t(Testo::SpostatoNelCestino)));
     }
 
+    /// Salva la playlist come M3U: percorsi completi per i file, indirizzi per le radio.
+    fn salva_playlist(&mut self, file: &gio::File) {
+        let mut testo = String::from("#EXTM3U\n");
+        for voce in &self.playlist {
+            let f = gio::File::for_uri(&voce.uri);
+            let dove = f
+                .path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| voce.uri.clone());
+            testo.push_str(&format!("#EXTINF:-1,{}\n{dove}\n", voce.nome));
+        }
+        let esito = match file.path() {
+            Some(p) => std::fs::write(&p, testo).map_err(|e| e.to_string()),
+            None => Err("percorso non locale".into()),
+        };
+        match esito {
+            Ok(()) => self.avviso(&format!(
+                "{} {}",
+                t(Testo::PlaylistSalvata),
+                file.basename()
+                    .map(|b| b.display().to_string())
+                    .unwrap_or_default()
+            )),
+            Err(e) => self.avviso(&format!("{} {e}", t(Testo::ErroreSalvataggio))),
+        }
+    }
+
     /// Un messaggio nella riga piccola, che resta per qualche secondo
     /// prima che torni la riga con formato e qualità.
     fn avviso(&mut self, testo: &str) {
@@ -1096,7 +1123,45 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     });
     finestra.add_action(&cestina);
 
+    // Apri cartella… e Salva playlist…: finestre di scelta file di GNOME.
+    let apri = gio::SimpleAction::new("apri_cartella", None);
+    let (w, s) = (finestra.clone(), stato.clone());
+    apri.connect_activate(move |_, _| {
+        let s = s.clone();
+        gtk::FileDialog::builder()
+            .title(t(Testo::ApriCartella))
+            .build()
+            .select_folder(Some(&w), gio::Cancellable::NONE, move |scelta| {
+                if let Ok(cartella) = scelta {
+                    let mut nuove = Vec::new();
+                    raccogli(&cartella, &mut nuove);
+                    s.borrow_mut().aggiungi_e_suona(nuove);
+                }
+            });
+    });
+    finestra.add_action(&apri);
+
+    let salva = gio::SimpleAction::new("salva_playlist", None);
+    let (w, s) = (finestra.clone(), stato.clone());
+    salva.connect_activate(move |_, _| {
+        let s = s.clone();
+        gtk::FileDialog::builder()
+            .title(t(Testo::SalvaPlaylist))
+            .initial_name("playlist.m3u")
+            .build()
+            .save(Some(&w), gio::Cancellable::NONE, move |scelta| {
+                if let Ok(file) = scelta {
+                    s.borrow_mut().salva_playlist(&file);
+                }
+            });
+    });
+    finestra.add_action(&salva);
+
     let modello = gio::Menu::new();
+    let file = gio::Menu::new();
+    file.append(Some(t(Testo::ApriCartella)), Some("win.apri_cartella"));
+    file.append(Some(t(Testo::SalvaPlaylist)), Some("win.salva_playlist"));
+    modello.append_section(None, &file);
     let brano = gio::Menu::new();
     brano.append(Some(t(Testo::Cestina)), Some("win.cestina"));
     modello.append_section(None, &brano);
@@ -1419,6 +1484,8 @@ fn main() -> glib::ExitCode {
         carica_stile();
         // Canc: sposta nel Cestino il brano in corso.
         app.set_accels_for_action("win.cestina", &["Delete"]);
+        app.set_accels_for_action("win.apri_cartella", &["<Control>o"]);
+        app.set_accels_for_action("win.salva_playlist", &["<Control>s"]);
         // Comandi del lettore: scorciatoie comuni dei lettori GNOME, tasti multimediali
         // della tastiera e, per nostalgia, i tasti dei vecchi lettori (Z X C V B).
         for (azione, tasti) in [
