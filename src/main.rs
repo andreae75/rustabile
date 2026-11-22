@@ -27,6 +27,9 @@ const ESTENSIONI_PLAYLIST: &[&str] = &["m3u", "m3u8", "pls"];
 struct Voce {
     uri: String,
     nome: String,
+    /// La playlist locale (.m3u/.pls) da cui arriva, se c'è: cestinando il brano
+    /// ne togliamo anche la riga, se il file della playlist è scrivibile.
+    origine: Option<std::path::PathBuf>,
 }
 
 /// Tutto lo stato del lettore: il motore audio, la playlist e i widget da aggiornare.
@@ -364,6 +367,17 @@ impl Stato {
             }
         }
 
+        // Il brano arrivava da una playlist sul disco? Togliamo anche la sua riga,
+        // se il file della playlist è scrivibile (altrimenti resta com'è).
+        let mut da_dove = String::new();
+        if let (true, Some(origine)) = (file.path().is_some(), &self.playlist[i].origine) {
+            if togli_da_playlist(origine, &self.playlist[i].uri) {
+                if let Some(nome_lista) = origine.file_name() {
+                    da_dove = format!(" — {}", nome_lista.to_string_lossy());
+                }
+            }
+        }
+
         self.playlist.remove(i);
         self.corrente = None;
         self.segno.corrente.set(None);
@@ -382,7 +396,7 @@ impl Stato {
             self.ferma();
             self.titolo.set_label(t(Testo::TrascinaQui));
         }
-        self.avviso(&format!("{} {nome}", t(Testo::SpostatoNelCestino)));
+        self.avviso(&format!("{} {nome}{da_dove}", t(Testo::SpostatoNelCestino)));
     }
 
     /// Un messaggio nella riga piccola, che resta per qualche secondo
@@ -559,6 +573,21 @@ fn nome_da_file(file: &gio::File) -> String {
     }
 }
 
+/// Una voce scritta in una playlist ("album/01.mp3", "/musica/x.flac", "http://…")
+/// diventa un file: i percorsi relativi partono dalla cartella della playlist.
+fn risolvi_voce(base: Option<&gio::File>, voce: &str) -> gio::File {
+    if voce.contains("://") {
+        gio::File::for_uri(voce)
+    } else if Path::new(voce).is_absolute() {
+        gio::File::for_path(voce)
+    } else {
+        match base {
+            Some(b) => b.resolve_relative_path(voce.replace('\\', "/")),
+            None => gio::File::for_path(voce),
+        }
+    }
+}
+
 /// Legge una playlist (locale o online) e restituisce le sue voci.
 /// I percorsi relativi vengono risolti rispetto alla cartella della playlist.
 fn leggi_playlist(file: &gio::File) -> Vec<Voce> {
@@ -568,17 +597,11 @@ fn leggi_playlist(file: &gio::File) -> Vec<Voce> {
     };
     let testo = String::from_utf8_lossy(&byte);
     let base = file.parent();
-    let risolvi = |voce: &str| -> gio::File {
-        if voce.contains("://") {
-            gio::File::for_uri(voce)
-        } else if Path::new(voce).is_absolute() {
-            gio::File::for_path(voce)
-        } else {
-            match &base {
-                Some(b) => b.resolve_relative_path(voce.replace('\\', "/")),
-                None => gio::File::for_path(voce),
-            }
-        }
+    let origine = file.path();
+    let voce = |f: gio::File, nome: String| Voce {
+        uri: f.uri().to_string(),
+        nome,
+        origine: origine.clone(),
     };
 
     let mut voci = Vec::new();
@@ -597,12 +620,9 @@ fn leggi_playlist(file: &gio::File) -> Vec<Voce> {
             }
         }
         for (n, indirizzo) in indirizzi {
-            let f = risolvi(&indirizzo);
+            let f = risolvi_voce(base.as_ref(), &indirizzo);
             let nome = titoli.remove(&n).unwrap_or_else(|| nome_da_file(&f));
-            voci.push(Voce {
-                uri: f.uri().to_string(),
-                nome,
-            });
+            voci.push(voce(f, nome));
         }
     } else {
         // Formato M3U: una voce per riga; "#EXTINF:durata,Titolo" dà il nome alla riga dopo.
@@ -611,16 +631,116 @@ fn leggi_playlist(file: &gio::File) -> Vec<Voce> {
             if let Some(info) = riga.strip_prefix("#EXTINF:") {
                 prossimo_nome = info.split_once(',').map(|(_, t)| t.trim().to_string());
             } else if !riga.is_empty() && !riga.starts_with('#') {
-                let f = risolvi(riga);
+                let f = risolvi_voce(base.as_ref(), riga);
                 let nome = prossimo_nome.take().unwrap_or_else(|| nome_da_file(&f));
-                voci.push(Voce {
-                    uri: f.uri().to_string(),
-                    nome,
-                });
+                voci.push(voce(f, nome));
             }
         }
     }
     voci
+}
+
+/// Toglie da una playlist locale tutte le voci che puntano a `uri`.
+/// Tocca il file solo se lo possiamo scrivere; altrimenti lo lascia com'è.
+/// Restituisce `true` se il file è stato riscritto.
+fn togli_da_playlist(playlist: &Path, uri: &str) -> bool {
+    // Si può scrivere? Aprirlo in aggiunta non cambia nulla, ma fallisce se non abbiamo il permesso.
+    if std::fs::OpenOptions::new()
+        .append(true)
+        .open(playlist)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(testo) = std::fs::read_to_string(playlist) else {
+        return false;
+    };
+    let base = gio::File::for_path(playlist).parent();
+    let punta_al_brano = |voce: &str| risolvi_voce(base.as_ref(), voce.trim()).uri() == uri;
+    let a_capo = if testo.contains("\r\n") { "\r\n" } else { "\n" };
+    let righe: Vec<&str> = testo.lines().collect();
+
+    let nuove: Vec<String> = if estensione(&playlist.to_string_lossy()) == "pls" {
+        // PLS: togliamo FileN/TitleN/LengthN delle voci da eliminare e rinumeriamo il resto.
+        let numero = |riga: &str, prefisso: &str| -> Option<String> {
+            let (chiave, _) = riga.trim().split_once('=')?;
+            let chiave = chiave.to_lowercase();
+            let n = chiave.strip_prefix(prefisso)?;
+            (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| n.to_string())
+        };
+        let via: std::collections::HashSet<String> = righe
+            .iter()
+            .filter_map(|r| {
+                let n = numero(r, "file")?;
+                punta_al_brano(r.split_once('=')?.1).then_some(n)
+            })
+            .collect();
+        if via.is_empty() {
+            return false;
+        }
+        let mut restanti: Vec<String> = righe.iter().filter_map(|r| numero(r, "file")).collect();
+        restanti.retain(|n| !via.contains(n));
+        let nuovo_numero = |n: &str| restanti.iter().position(|x| x == n).map(|i| i + 1);
+        righe
+            .iter()
+            .filter_map(|r| {
+                for prefisso in ["file", "title", "length"] {
+                    if let Some(n) = numero(r, prefisso) {
+                        let nuovo = nuovo_numero(&n)?;
+                        let (chiave, valore) = r.trim().split_once('=')?;
+                        let nome = &chiave[..prefisso.len()];
+                        return Some(format!("{nome}{nuovo}={valore}"));
+                    }
+                }
+                if r.trim().to_lowercase().starts_with("numberofentries=") {
+                    return Some(format!("NumberOfEntries={}", restanti.len()));
+                }
+                Some(r.to_string())
+            })
+            .collect()
+    } else {
+        // M3U: togliamo la riga della voce e la sua "#EXTINF" subito prima.
+        let mut via = vec![false; righe.len()];
+        let mut ultima_extinf: Option<usize> = None;
+        for (i, riga) in righe.iter().enumerate() {
+            let r = riga.trim();
+            if r.starts_with("#EXTINF:") {
+                ultima_extinf = Some(i);
+            } else if !r.is_empty() && !r.starts_with('#') {
+                if punta_al_brano(r) {
+                    via[i] = true;
+                    if let Some(e) = ultima_extinf {
+                        via[e] = true;
+                    }
+                }
+                ultima_extinf = None;
+            }
+        }
+        if !via.contains(&true) {
+            return false;
+        }
+        righe
+            .iter()
+            .zip(via)
+            .filter(|(_, togli)| !togli)
+            .map(|(r, _)| r.to_string())
+            .collect()
+    };
+
+    let mut risultato = nuove.join(a_capo);
+    if testo.ends_with('\n') {
+        risultato.push_str(a_capo);
+    }
+    match std::fs::write(playlist, risultato) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "Impossibile aggiornare la playlist {}: {e}",
+                playlist.display()
+            );
+            false
+        }
+    }
 }
 
 /// Trasforma un file, una cartella o una playlist in voci da suonare.
@@ -648,6 +768,7 @@ fn raccogli(file: &gio::File, risultato: &mut Vec<Voce>) {
         _ => risultato.push(Voce {
             uri: uri.to_string(),
             nome: nome_da_file(file),
+            origine: None,
         }),
     }
 }
@@ -1433,5 +1554,67 @@ mod test_dettagli {
         };
         assert_eq!(q.formato(), "FLAC");
         assert!(q.senza_perdita());
+    }
+}
+
+#[cfg(test)]
+mod test_togli_da_playlist {
+    use super::*;
+
+    fn cartella(nome: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rustabile-togli-{nome}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn uri(d: &Path, nome: &str) -> String {
+        gio::File::for_path(d.join(nome)).uri().to_string()
+    }
+
+    #[test]
+    fn m3u_toglie_voce_e_extinf() {
+        let d = cartella("m3u");
+        let lista = d.join("lista.m3u");
+        std::fs::write(
+            &lista,
+            "#EXTM3U\n#EXTINF:100,Uno\n01 Uno.mp3\n#EXTINF:200,Due\n02 Due.flac\nhttp://radio.example/x\n",
+        )
+        .unwrap();
+        assert!(togli_da_playlist(&lista, &uri(&d, "02 Due.flac")));
+        assert_eq!(
+            std::fs::read_to_string(&lista).unwrap(),
+            "#EXTM3U\n#EXTINF:100,Uno\n01 Uno.mp3\nhttp://radio.example/x\n"
+        );
+        // Una voce che non c'è: il file non cambia.
+        assert!(!togli_da_playlist(&lista, &uri(&d, "99 Nessuno.mp3")));
+    }
+
+    #[test]
+    fn pls_toglie_e_rinumera() {
+        let d = cartella("pls");
+        let lista = d.join("lista.pls");
+        std::fs::write(
+            &lista,
+            "[playlist]\r\nFile1=a.mp3\r\nTitle1=A\r\nFile2=b.mp3\r\nTitle2=B\r\nLength2=10\r\nFile3=c.mp3\r\nTitle3=C\r\nNumberOfEntries=3\r\nVersion=2\r\n",
+        )
+        .unwrap();
+        assert!(togli_da_playlist(&lista, &uri(&d, "b.mp3")));
+        assert_eq!(
+            std::fs::read_to_string(&lista).unwrap(),
+            "[playlist]\r\nFile1=a.mp3\r\nTitle1=A\r\nFile2=c.mp3\r\nTitle2=C\r\nNumberOfEntries=2\r\nVersion=2\r\n"
+        );
+    }
+
+    #[test]
+    fn sola_lettura_resta_com_e() {
+        let d = cartella("solalettura");
+        let lista = d.join("lista.m3u");
+        std::fs::write(&lista, "01 Uno.mp3\n").unwrap();
+        let mut permessi = std::fs::metadata(&lista).unwrap().permissions();
+        permessi.set_readonly(true);
+        std::fs::set_permissions(&lista, permessi).unwrap();
+        assert!(!togli_da_playlist(&lista, &uri(&d, "01 Uno.mp3")));
+        assert_eq!(std::fs::read_to_string(&lista).unwrap(), "01 Uno.mp3\n");
     }
 }
