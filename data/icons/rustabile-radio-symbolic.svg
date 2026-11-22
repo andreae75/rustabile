@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#2e3436">
+    <!-- antenna con pomello -->
+    <path d="M3.28 5.49 L11.88 0.09 L12.52 1.11 L3.92 6.51 Z"/>
+    <circle cx="12.3" cy="0.9" r="0.9"/>
+    <!-- corpo della radio, con altoparlante e scala delle frequenze ritagliati -->
+    <path fill-rule="evenodd" d="M2 6 H14 A2 2 0 0 1 16 8 V13 A2 2 0 0 1 14 15 H2 A2 2 0 0 1 0 13 V8 A2 2 0 0 1 2 6 Z
+      M2.5 10.5 A2.5 2.5 0 1 0 7.5 10.5 A2.5 2.5 0 1 0 2.5 10.5 Z
+      M9 8.5 H14 V9.5 H9 Z
+      M9 11 H14 V12 H9 Z
+      M11 12.5 H12 V13.5 H11 Z"/>
+    <!-- centro dell'altoparlante -->
+    <circle cx="5" cy="10.5" r="1"/>
+  </g>
+</svg>

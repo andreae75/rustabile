@@ -43,6 +43,10 @@ struct Stato {
     dettagli: gtk::Label,
     qualita: Qualita,
     impostazioni: Impostazioni,
+    /// Il pannello playlist: un elenco di testi ("▶ 3. Titolo") mostrato da una ListView.
+    elenco: gtk::StringList,
+    vista: gtk::ListView,
+    conteggio: gtk::Label,
     /// Finché esiste, GStreamer ci consegna i suoi messaggi (fine brano, errori, tag).
     _guardia_bus: Option<gst::bus::BusWatchGuard>,
 }
@@ -95,6 +99,8 @@ struct Impostazioni {
     sempre_sopra: bool,
     /// Trascinando file nella finestra: suonano subito (vero) o vanno in coda (falso).
     trascina_suona: bool,
+    /// Il pannello playlist era aperto all'ultima chiusura.
+    mostra_playlist: bool,
     volume: f64,
 }
 
@@ -113,6 +119,7 @@ impl Impostazioni {
         Impostazioni {
             sempre_sopra: kf.boolean(Self::GRUPPO, "sempre_sopra").unwrap_or(false),
             trascina_suona: kf.boolean(Self::GRUPPO, "trascina_suona").unwrap_or(true),
+            mostra_playlist: kf.boolean(Self::GRUPPO, "mostra_playlist").unwrap_or(false),
             volume: kf.double(Self::GRUPPO, "volume").unwrap_or(0.8),
         }
     }
@@ -121,6 +128,7 @@ impl Impostazioni {
         let kf = glib::KeyFile::new();
         kf.set_boolean(Self::GRUPPO, "sempre_sopra", self.sempre_sopra);
         kf.set_boolean(Self::GRUPPO, "trascina_suona", self.trascina_suona);
+        kf.set_boolean(Self::GRUPPO, "mostra_playlist", self.mostra_playlist);
         kf.set_double(Self::GRUPPO, "volume", self.volume);
         let percorso = Self::percorso();
         if let Some(cartella) = percorso.parent() {
@@ -185,12 +193,60 @@ impl Stato {
             ..Default::default()
         };
         self.dettagli.set_label("");
+        // Con una radio non si può andare avanti e indietro: barra grigia da subito.
+        self.barra.set_sensitive(!self.qualita.radio);
+        self.barra.set_value(0.0);
 
-        self.corrente = Some(indice);
+        let precedente = self.corrente.replace(indice);
         self.titolo
             .set_label(&format!("{}. {}", indice + 1, voce.nome));
         self.pulsante_play
             .set_icon_name("media-playback-pause-symbolic");
+
+        // Nel pannello: togli il segno dal brano di prima, mettilo a quello nuovo.
+        if let Some(p) = precedente {
+            self.aggiorna_riga(p);
+        }
+        self.aggiorna_riga(indice);
+        self.vista
+            .scroll_to(indice as u32, gtk::ListScrollFlags::NONE, None);
+    }
+
+    fn testo_riga(&self, i: usize) -> String {
+        let segno = if self.corrente == Some(i) {
+            "▶"
+        } else {
+            "  "
+        };
+        format!("{segno} {}. {}", i + 1, self.playlist[i].nome)
+    }
+
+    fn aggiorna_riga(&self, i: usize) {
+        if i < self.playlist.len() {
+            self.elenco
+                .splice(i as u32, 1, &[self.testo_riga(i).as_str()]);
+        }
+    }
+
+    /// Aggiunge voci in fondo alla playlist (e al pannello), senza farle partire.
+    fn estendi(&mut self, nuove: Vec<Voce>) {
+        let prima = self.playlist.len();
+        self.playlist.extend(nuove);
+        let testi: Vec<String> = (prima..self.playlist.len())
+            .map(|i| self.testo_riga(i))
+            .collect();
+        let testi: Vec<&str> = testi.iter().map(String::as_str).collect();
+        self.elenco.splice(prima as u32, 0, &testi);
+        self.aggiorna_conteggio();
+    }
+
+    fn aggiorna_conteggio(&self) {
+        let n = self.playlist.len();
+        self.conteggio.set_label(&match n {
+            0 => "Playlist vuota".to_string(),
+            1 => "1 brano".to_string(),
+            n => format!("{n} brani"),
+        });
     }
 
     fn sta_suonando(&self) -> bool {
@@ -227,9 +283,10 @@ impl Stato {
         match self.corrente {
             Some(i) if i + 1 < self.playlist.len() => self.suona(i + 1),
             // Fine della playlist: ci fermiamo e ripartiamo dall'inizio al prossimo play.
-            Some(_) => {
+            Some(i) => {
                 self.ferma();
                 self.corrente = None;
+                self.aggiorna_riga(i);
             }
             None => {}
         }
@@ -258,7 +315,7 @@ impl Stato {
     /// Aggiunge voci in fondo alla playlist e fa partire subito la prima nuova.
     fn aggiungi_e_suona(&mut self, nuove: Vec<Voce>) {
         let prima_nuova = self.playlist.len();
-        self.playlist.extend(nuove);
+        self.estendi(nuove);
         if prima_nuova < self.playlist.len() {
             self.suona(prima_nuova);
         }
@@ -267,6 +324,8 @@ impl Stato {
     fn svuota(&mut self) {
         self.ferma();
         self.playlist.clear();
+        self.elenco.splice(0, self.elenco.n_items(), &[]);
+        self.aggiorna_conteggio();
         self.corrente = None;
         self.titolo
             .set_label("Trascina qui musica, cartelle o playlist");
@@ -279,7 +338,7 @@ impl Stato {
             return;
         }
         let prima_nuova = self.playlist.len();
-        self.playlist.extend(nuove);
+        self.estendi(nuove);
         if self.corrente.is_none() {
             self.suona(prima_nuova);
         }
@@ -379,7 +438,8 @@ impl Stato {
         };
         let durata = self.playbin.query_duration::<gst::ClockTime>();
         self.aggiorna_dettagli(durata);
-        match durata {
+        // Le radio a volte dichiarano una durata finta: per loro vale sempre "LIVE".
+        match durata.filter(|_| !self.qualita.radio) {
             Some(durata) => {
                 self.barra.set_sensitive(true);
                 self.barra.set_range(0.0, durata.seconds() as f64);
@@ -393,6 +453,7 @@ impl Stato {
             // Uno stream radio non ha durata: niente barra, solo il tempo d'ascolto.
             None => {
                 self.barra.set_sensitive(false);
+                self.barra.set_value(0.0);
                 self.tempo
                     .set_label(&format!("{}  ● LIVE", mm_ss(posizione.seconds())));
             }
@@ -541,7 +602,7 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     riquadro.set_child(Some(&riga));
 
     let menu = gtk::MenuButton::new();
-    menu.set_icon_name("network-wireless-symbolic");
+    menu.set_icon_name("rustabile-radio-symbolic");
     menu.set_tooltip_text(Some("Aggiungi una radio"));
     menu.add_css_class("flat");
     menu.set_popover(Some(&riquadro));
@@ -569,91 +630,74 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
     menu
 }
 
-/// Il pulsante "playlist": mostra i brani in coda; un clic su un brano lo fa partire.
-/// L'elenco viene ricostruito ogni volta che si apre il riquadro.
-fn pulsante_playlist(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
-    let elenco = gtk::ListBox::new();
-    elenco.set_selection_mode(gtk::SelectionMode::None);
-    elenco.set_activate_on_single_click(true);
+/// La vista dell'elenco: una `ListView` che mostra i testi di `elenco`.
+/// Crea solo le righe visibili, quindi regge anche playlist di migliaia di radio.
+fn crea_vista_playlist(elenco: &gtk::StringList) -> gtk::ListView {
+    let fabbrica = gtk::SignalListItemFactory::new();
+    fabbrica.connect_setup(|_, oggetto| {
+        let riga = oggetto.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let etichetta = gtk::Label::new(None);
+        etichetta.set_xalign(0.0);
+        etichetta.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        etichetta.set_margin_start(6);
+        etichetta.set_margin_end(6);
+        riga.set_child(Some(&etichetta));
+    });
+    fabbrica.connect_bind(|_, oggetto| {
+        let riga = oggetto.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let (Some(testo), Some(etichetta)) = (
+            riga.item().and_downcast::<gtk::StringObject>(),
+            riga.child().and_downcast::<gtk::Label>(),
+        ) else {
+            return;
+        };
+        etichetta.set_label(&testo.string());
+    });
+    let vista = gtk::ListView::new(
+        Some(gtk::NoSelection::new(Some(elenco.clone()))),
+        Some(fabbrica),
+    );
+    vista.set_single_click_activate(true);
+    vista
+}
+
+/// Il pannello playlist sotto i comandi, come nei lettori di una volta:
+/// l'elenco dei brani (un clic per farne partire uno), il conteggio e "Svuota".
+fn pannello_playlist(stato: &Rc<RefCell<Stato>>) -> gtk::Box {
+    let (vista, conteggio) = {
+        let s = stato.borrow();
+        (s.vista.clone(), s.conteggio.clone())
+    };
+
+    let st = stato.clone();
+    vista.connect_activate(move |_, posizione| st.borrow_mut().suona(posizione as usize));
 
     let scorrimento = gtk::ScrolledWindow::new();
-    scorrimento.set_child(Some(&elenco));
+    scorrimento.set_child(Some(&vista));
     scorrimento.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scorrimento.set_min_content_width(320);
-    scorrimento.set_max_content_height(320);
-    scorrimento.set_propagate_natural_height(true);
+    scorrimento.set_min_content_height(220);
+    scorrimento.set_vexpand(true);
+    scorrimento.set_has_frame(true);
 
-    let svuota = gtk::Button::with_label("Svuota la playlist");
-    svuota.add_css_class("destructive-action");
+    let svuota = gtk::Button::with_label("Svuota");
+    svuota.add_css_class("flat");
+    let st = stato.clone();
+    svuota.connect_clicked(move |_| st.borrow_mut().svuota());
 
-    let colonna = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    colonna.append(&scorrimento);
-    colonna.append(&svuota);
+    conteggio.set_hexpand(true);
+    conteggio.set_xalign(0.0);
+    conteggio.add_css_class("dim-label");
+    conteggio.add_css_class("caption");
 
-    let riquadro = gtk::Popover::new();
-    riquadro.set_child(Some(&colonna));
+    let piede = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    piede.append(&conteggio);
+    piede.append(&svuota);
 
-    let menu = gtk::MenuButton::new();
-    menu.set_icon_name("view-list-symbolic");
-    menu.set_tooltip_text(Some("Playlist"));
-    menu.add_css_class("flat");
-    menu.set_popover(Some(&riquadro));
-
-    // Riempie l'elenco quando il riquadro si apre.
-    let s = stato.clone();
-    let e = elenco.clone();
-    let sv = svuota.clone();
-    riquadro.connect_show(move |_| {
-        while let Some(figlio) = e.first_child() {
-            e.remove(&figlio);
-        }
-        let stato = s.borrow();
-        if stato.playlist.is_empty() {
-            let vuota = gtk::Label::new(Some("La playlist è vuota"));
-            vuota.set_margin_top(12);
-            vuota.set_margin_bottom(12);
-            vuota.add_css_class("dim-label");
-            e.append(&vuota);
-        }
-        for (i, voce) in stato.playlist.iter().enumerate() {
-            let riga = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            riga.set_margin_top(4);
-            riga.set_margin_bottom(4);
-            riga.set_margin_start(6);
-            riga.set_margin_end(6);
-            let icona = gtk::Image::from_icon_name("media-playback-start-symbolic");
-            icona.set_opacity(if stato.corrente == Some(i) { 1.0 } else { 0.0 });
-            let nome = gtk::Label::new(Some(&format!("{}. {}", i + 1, voce.nome)));
-            nome.set_xalign(0.0);
-            nome.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            if stato.corrente == Some(i) {
-                nome.add_css_class("heading");
-            }
-            riga.append(&icona);
-            riga.append(&nome);
-            e.append(&riga);
-        }
-        sv.set_sensitive(!stato.playlist.is_empty());
-    });
-
-    let s = stato.clone();
-    let r = riquadro.clone();
-    elenco.connect_row_activated(move |_, riga| {
-        let i = riga.index();
-        let mut stato = s.borrow_mut();
-        if i >= 0 && (i as usize) < stato.playlist.len() {
-            stato.suona(i as usize);
-            r.popdown();
-        }
-    });
-
-    let s = stato.clone();
-    let r = riquadro.clone();
-    svuota.connect_clicked(move |_| {
-        s.borrow_mut().svuota();
-        r.popdown();
-    });
-    menu
+    let pannello = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    pannello.set_margin_top(6);
+    pannello.append(&scorrimento);
+    pannello.append(&piede);
+    pannello
 }
 
 /// Finestrella delle preferenze: due interruttori, salvati subito su file.
@@ -865,6 +909,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         .expect("GStreamer: manca l'elemento playbin");
     playbin.set_property("volume", volume.value());
 
+    let elenco = gtk::StringList::new(&[]);
     let stato = Rc::new(RefCell::new(Stato {
         playbin: playbin.clone(),
         playlist: Vec::new(),
@@ -876,14 +921,27 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         dettagli,
         qualita: Qualita::default(),
         impostazioni,
+        elenco: elenco.clone(),
+        vista: crea_vista_playlist(&elenco),
+        conteggio: gtk::Label::new(None),
         _guardia_bus: None,
     }));
+    stato.borrow().aggiorna_conteggio();
+
+    // Pannello playlist sotto i comandi, che si apre e chiude con un pulsante.
+    let mostra_playlist = gtk::ToggleButton::new();
+    mostra_playlist.set_icon_name("view-list-symbolic");
+    mostra_playlist.set_tooltip_text(Some("Mostra la playlist"));
+    mostra_playlist.add_css_class("flat");
+    let tendina = gtk::Revealer::new();
+    tendina.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+    tendina.set_child(Some(&pannello_playlist(&stato)));
 
     let comandi = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     for b in [&indietro, &pulsante_play, &ferma, &avanti] {
         comandi.append(b);
     }
-    comandi.append(&pulsante_playlist(&stato));
+    comandi.append(&mostra_playlist);
     comandi.append(&pulsante_radio(&stato));
     comandi.append(&gtk::Image::from_icon_name("audio-volume-medium-symbolic"));
     comandi.append(&volume);
@@ -896,6 +954,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     contenuto.append(&display);
     contenuto.append(&barra);
     contenuto.append(&comandi);
+    contenuto.append(&tendina);
 
     let finestra = gtk::ApplicationWindow::builder()
         .application(app)
@@ -904,6 +963,26 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
         .child(&contenuto)
         .build();
     comandi.append(&pulsante_menu(&finestra, &stato));
+
+    // Aprendo il pannello la finestra si allunga; chiudendolo torna compatta.
+    let (t, w, s) = (tendina.clone(), finestra.clone(), stato.clone());
+    mostra_playlist.connect_toggled(move |b| {
+        let aperta = b.is_active();
+        t.set_vexpand(aperta);
+        t.set_reveal_child(aperta);
+        let mut stato = s.borrow_mut();
+        stato.impostazioni.mostra_playlist = aperta;
+        stato.impostazioni.salva();
+        if !aperta {
+            let w = w.clone();
+            glib::timeout_add_local_once(Duration::from_millis(260), move || {
+                w.set_default_size(w.width(), 1);
+            });
+        }
+    });
+    if stato.borrow().impostazioni.mostra_playlist {
+        mostra_playlist.set_active(true);
+    }
 
     // Sempre in primo piano: la richiesta va fatta quando la finestra è sullo schermo.
     if stato.borrow().impostazioni.sempre_sopra {
@@ -1012,7 +1091,23 @@ fn carica_stile() {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+        registra_icone(&display);
     }
+}
+
+/// Le icone nostre (la radio) sono dentro il programma: all'avvio le scriviamo
+/// nella cache e diciamo al tema di icone di cercarle lì. Così funzionano
+/// ovunque sia installato Rustabile, e GTK le colora come le altre icone simboliche.
+fn registra_icone(display: &gdk::Display) {
+    let base = glib::user_cache_dir().join("rustabile").join("icone");
+    let cartella = base.join("hicolor").join("scalable").join("actions");
+    let file = cartella.join("rustabile-radio-symbolic.svg");
+    let contenuto = include_str!("../data/icons/rustabile-radio-symbolic.svg");
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(contenuto) {
+        let _ = std::fs::create_dir_all(&cartella);
+        let _ = std::fs::write(&file, contenuto);
+    }
+    gtk::IconTheme::for_display(display).add_search_path(&base);
 }
 
 fn main() -> glib::ExitCode {

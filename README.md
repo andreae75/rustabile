@@ -3,8 +3,8 @@
 Un mini lettore musicale per GNOME, scritto in Rust: le funzioni di base dei lettori di una volta, niente di più.
 
 - Trascina file, cartelle o playlist (`.m3u`, `.m3u8`, `.pls`) nella finestra per riempire la coda. Le cartelle vengono esplorate in ordine alfabetico, sottocartelle comprese.
-- Radio: il pulsante con l'antenna accetta l'indirizzo di uno stream o di una playlist online, e mostra il titolo del brano in onda se la radio lo trasmette.
-- Pulsante playlist: elenco dei brani in coda, un clic per farne partire uno, e "Svuota".
+- Radio: il pulsante con la radiolina (icona disegnata apposta, in `data/icons`) accetta l'indirizzo di uno stream o di una playlist online, e mostra il nome della stazione e il brano in onda se la radio li trasmette. Con le radio la barra di avanzamento è grigia, perché non si può andare avanti e indietro.
+- Pannello playlist sotto la finestra (si apre e chiude col pulsante a lista): elenco dei brani, un clic per farne partire uno, conteggio e "Svuota". Regge anche playlist di migliaia di radio.
 - Menu con Preferenze (sempre in primo piano, trascinamento che suona subito o accoda) e Informazioni. Le preferenze e il volume stanno in `~/.config/rustabile/impostazioni.ini`.
 - Raccolte di radio per genere: incolla nel pulsante radio, o trascina dal browser, il link "raw" di una playlist come quelle di [m3u-radio-music-playlists](https://github.com/junguler/m3u-radio-music-playlists).
 - Play / pausa, stop, avanti, indietro (se il brano è avanti più di 3 secondi ricomincia), barra di avanzamento, volume.
