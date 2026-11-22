@@ -21,11 +21,19 @@ Servono Rust e le librerie di sviluppo di GTK4 e GStreamer. Su Ubuntu:
 sudo apt install libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 ```
 
-Poi:
+Per provarlo al volo:
 
 ```bash
 cargo run --release
 ```
+
+Per installarlo (programma in `~/.local/bin`, lanciatore e icona nel menu delle applicazioni):
+
+```bash
+./installa.sh
+```
+
+Con `./installa.sh --predefinito` diventa anche il lettore predefinito per i file audio.
 
 ## Idee per farlo crescere
 
@@ -34,7 +42,10 @@ cargo run --release
 - Aprire i file passati da riga di comando o con "Apri con" di Nautilus (`ApplicationFlags::HANDLES_OPEN`).
 - Comandi multimediali di GNOME e tasti della tastiera via MPRIS (crate `mpris-server`).
 - Ripetizione e ordine casuale.
-- File `.desktop` e icona per averlo nel menu delle applicazioni.
+
+## Icona
+
+L'icona (`data/icons/`) è un disegno originale: un ingranaggio color ruggine con una nota musicale. Richiama Rust senza usarne il logo, che è un marchio della Rust Foundation.
 
 ## Licenza
 

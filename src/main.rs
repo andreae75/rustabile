@@ -869,7 +869,7 @@ fn mostra_informazioni(finestra: &gtk::ApplicationWindow) {
         .program_name("Rustabile")
         .version(env!("CARGO_PKG_VERSION"))
         .comments(t(Testo::Descrizione))
-        .logo_icon_name("audio-x-generic")
+        .logo_icon_name(APP_ID)
         .authors(["andreae75"])
         .license_type(gtk::License::MitX11)
         .build()
@@ -1202,7 +1202,16 @@ fn registra_icone(display: &gdk::Display) {
         let _ = std::fs::create_dir_all(&cartella);
         let _ = std::fs::write(&file, contenuto);
     }
+    // L'icona dell'app, per la finestra e per "Informazioni".
+    let app = base.join("hicolor").join("scalable").join("apps");
+    let file_app = app.join(format!("{APP_ID}.svg"));
+    let icona_app = include_str!("../data/icons/io.github.andreae75.Rustabile.svg");
+    if std::fs::read_to_string(&file_app).ok().as_deref() != Some(icona_app) {
+        let _ = std::fs::create_dir_all(&app);
+        let _ = std::fs::write(&file_app, icona_app);
+    }
     gtk::IconTheme::for_display(display).add_search_path(&base);
+    gtk::Window::set_default_icon_name(APP_ID);
 }
 
 fn main() -> glib::ExitCode {
