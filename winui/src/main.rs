@@ -13,6 +13,10 @@ mod finestra;
 mod icona;
 #[cfg(windows)]
 mod tasti;
+#[cfg(windows)]
+mod trascina;
+#[cfg(windows)]
+mod unica;
 
 #[cfg(windows)]
 fn main() {

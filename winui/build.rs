@@ -8,6 +8,9 @@ fn main() {
     }
     let mut risorse = winresource::WindowsResource::new();
     risorse.set_icon("rustabile.ico");
+    // Il nome che Windows mostra in "Apri con" e in Gestione attività.
+    risorse.set("FileDescription", "Rustabile");
+    risorse.set("ProductName", "Rustabile");
     risorse
         .compile()
         .expect("impossibile aggiungere l'icona al programma");

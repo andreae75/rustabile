@@ -13,6 +13,8 @@ use windows_reactor::*;
 use crate::audio::{Audio, Eventi};
 use crate::icona;
 use crate::tasti::{self, Comando};
+use crate::trascina;
+use crate::unica;
 
 const CODICI_LINGUA: [&str; 6] = ["auto", "it", "en", "de", "es", "fr"];
 const LARGHEZZA: f64 = 480.0;
@@ -49,11 +51,15 @@ pub enum Messaggio {
     MostraRadio,
     Indirizzo(String),
     AscoltaRadio,
-    Trascinati(DroppedData),
+    Trascinati(Vec<String>),
     Menu(String),
     /// Voci pronte (cartelle e playlist si leggono fuori dalla finestra);
     /// il secondo valore dice se far partire subito la prima.
     Aggiungi(Vec<Voce>, bool),
+    /// File aperti da Esplora file, anche da un secondo avvio di Rustabile.
+    DaFuori(Vec<String>),
+    /// La cartella scelta con "Apri cartella…".
+    Scelta(Vec<String>),
     Salva(Option<std::path::PathBuf>),
     ChiudiRiquadro,
     TrascinaSuona(bool),
@@ -80,7 +86,10 @@ struct Rustabile {
     revisione: u64,
     /// Il volume cambiato si salva al giro successivo del timer.
     da_salvare: bool,
-    icona_messa: bool,
+    finestra_pronta: bool,
+    /// File arrivati da fuori, in attesa che ne arrivino altri.
+    in_arrivo: Vec<Vec<String>>,
+    ultimo_arrivo: Instant,
 }
 
 /// Il contenuto di un file o di un indirizzo (per le playlist online).
@@ -116,11 +125,18 @@ fn raccogli_tutti(uri: &[String]) -> Vec<Voce> {
 
 impl Rustabile {
     fn aggiungi_in_sottofondo(
-        &self,
+        &mut self,
         contesto: &ComponentContext<Self>,
         uri: Vec<String>,
         suona: bool,
     ) {
+        if uri.is_empty() {
+            return;
+        }
+        // Una cartella grande su un disco di rete può richiedere un po'.
+        self.dettagli = t(Testo::Caricamento).into();
+        let a_lungo = Instant::now() + Duration::from_secs(3600);
+        self.avviso = Some((self.dettagli.clone(), a_lungo));
         contesto.spawn_background(move |_| Messaggio::Aggiungi(raccogli_tutti(&uri), suona));
     }
 
@@ -129,6 +145,24 @@ impl Rustabile {
             std::thread::sleep(Duration::from_millis(300));
             Messaggio::Tick
         });
+    }
+
+    fn arriva(&mut self, uri: Vec<String>) {
+        if !uri.is_empty() {
+            self.in_arrivo.push(uri);
+            self.ultimo_arrivo = Instant::now();
+        }
+    }
+
+    /// Aprendo più file insieme Windows avvia Rustabile una volta per file:
+    /// aspettiamo che siano arrivati tutti, li mettiamo in ordine e suona il primo.
+    fn apri_arrivati(&mut self, contesto: &ComponentContext<Self>) {
+        if self.in_arrivo.is_empty() || self.ultimo_arrivo.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        let mut gruppi = std::mem::take(&mut self.in_arrivo);
+        gruppi.sort();
+        self.aggiungi_in_sottofondo(contesto, gruppi.concat(), true);
     }
 
     fn suona(&mut self, indice: usize) {
@@ -272,13 +306,13 @@ impl Rustabile {
     fn apri_cartella(&self, contesto: &ComponentContext<Self>) {
         let titolo = t(Testo::ApriCartella);
         contesto.spawn_background(move |_| {
-            let uri: Vec<String> = rfd::FileDialog::new()
+            let uri = rfd::FileDialog::new()
                 .set_title(titolo)
                 .pick_folder()
                 .iter()
                 .map(|p| uri_da_percorso(p))
                 .collect();
-            Messaggio::Aggiungi(raccogli_tutti(&uri), true)
+            Messaggio::Scelta(uri)
         });
     }
 
@@ -325,11 +359,6 @@ impl Rustabile {
 
     /// Ogni 300 ms: avvisi dal motore audio, tempo, barra e dettagli.
     fn tick(&mut self) {
-        // Al primo giro la finestra esiste di sicuro.
-        if !self.icona_messa {
-            self.icona_messa = true;
-            icona::applica();
-        }
         let eventi = self.audio.eventi.clone();
         if Eventi::preso(&eventi.avanti) {
             self.avanti();
@@ -629,7 +658,7 @@ impl Component for Rustabile {
         });
         Self::timer(contesto);
 
-        let rustabile = Rustabile {
+        let mut rustabile = Rustabile {
             audio,
             coda: Coda::default(),
             qualita: Qualita::default(),
@@ -646,23 +675,32 @@ impl Component for Rustabile {
             avviso: None,
             revisione: 0,
             da_salvare: false,
-            icona_messa: false,
+            finestra_pronta: false,
+            in_arrivo: Vec::new(),
+            ultimo_arrivo: Instant::now(),
         };
-        // File passati da riga di comando o con "Apri con".
-        let da_fuori: Vec<String> = std::env::args_os()
-            .skip(1)
-            .map(|a| voci::uri_da_testo(&a.to_string_lossy()))
-            .collect();
-        if !da_fuori.is_empty() {
-            rustabile.aggiungi_in_sottofondo(contesto, da_fuori, true);
-        }
+        rustabile.arriva(da_riga_di_comando());
         rustabile
     }
 
     fn update(&mut self, messaggio: Messaggio, contesto: &ComponentContext<Self>) {
         match messaggio {
             Messaggio::Tick => {
+                // Al primo giro la finestra esiste di sicuro.
+                if !self.finestra_pronta {
+                    self.finestra_pronta = true;
+                    icona::applica();
+                    let mittente = contesto.sender();
+                    trascina::aggancia(move |uri| {
+                        mittente.send(Messaggio::Trascinati(uri));
+                    });
+                    let mittente = contesto.sender();
+                    unica::aggancia(move |uri| {
+                        mittente.send(Messaggio::DaFuori(uri));
+                    });
+                }
                 self.tick();
+                self.apri_arrivati(contesto);
                 Self::timer(contesto);
             }
             Messaggio::Tasto(c) => self.comando(c, contesto),
@@ -695,20 +733,18 @@ impl Component for Rustabile {
                     self.radio_aperta = false;
                 }
             }
-            Messaggio::Trascinati(dati) => {
-                let uri = match dati {
-                    DroppedData::StorageItems(elementi) => elementi
-                        .iter()
-                        .map(|e| uri_da_percorso(std::path::Path::new(&e.path)))
-                        .collect(),
-                    DroppedData::Text(testo) => voci::uri_da_righe(&testo),
-                    DroppedData::Unsupported => Vec::new(),
-                };
+            Messaggio::Trascinati(uri) => {
                 let suona = self.impostazioni.trascina_suona;
                 self.aggiungi_in_sottofondo(contesto, uri, suona);
             }
             Messaggio::Menu(voce) => self.voce_di_menu(&voce, contesto),
-            Messaggio::Aggiungi(nuove, suona) => self.aggiungi(nuove, suona),
+            Messaggio::Aggiungi(nuove, suona) => {
+                self.avviso = None;
+                self.dettagli.clear();
+                self.aggiungi(nuove, suona);
+            }
+            Messaggio::DaFuori(uri) => self.arriva(uri),
+            Messaggio::Scelta(uri) => self.aggiungi_in_sottofondo(contesto, uri, true),
             Messaggio::Salva(None) => {}
             Messaggio::Salva(Some(file)) => match std::fs::write(&file, self.coda.m3u()) {
                 Ok(()) => {
@@ -759,14 +795,9 @@ impl Component for Rustabile {
             .on_value_changed(vista.callback(Messaggio::Barra))
             .grid_row(1);
 
-        let trascina = DragDropPolicy::new()
-            .storage_items(DragDropAction::new(DragDropOperation::Copy))
-            .text(DragDropAction::new(DragDropOperation::Copy));
         Border::new()
             .background(ThemeBrush::SolidBackground)
             .padding(Thickness::uniform(10.0))
-            .drop_policy(trascina)
-            .on_drop(vista.callback(Messaggio::Trascinati))
             .content(
                 Grid::new()
                     .rows([
@@ -800,7 +831,18 @@ fn lingua_di_sistema() -> String {
     String::from_utf16_lossy(&nome[..(n.max(1) - 1) as usize])
 }
 
+/// File passati da riga di comando o con "Apri con".
+fn da_riga_di_comando() -> Vec<String> {
+    std::env::args_os()
+        .skip(1)
+        .map(|a| voci::uri_da_testo(&a.to_string_lossy()))
+        .collect()
+}
+
 pub fn avvia() {
+    if unica::passata_a_quella_aperta(&da_riga_di_comando()) {
+        return;
+    }
     lingua::inizializza(&Impostazioni::carica().lingua, &[lingua_di_sistema()]);
     if let Err(e) = App::run_component::<Rustabile>(()) {
         eprintln!("Impossibile aprire la finestra: {e}");

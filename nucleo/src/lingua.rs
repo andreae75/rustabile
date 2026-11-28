@@ -89,6 +89,7 @@ pub enum Testo {
     LinguaSpiegazione,
     DescrizioneWindows,
     Chiudi,
+    Caricamento,
 }
 
 pub fn t(testo: Testo) -> &'static str {
@@ -321,6 +322,13 @@ pub fn t(testo: Testo) -> &'static str {
             De => "Schließen",
             Es => "Cerrar",
             Fr => "Fermer",
+        },
+        Caricamento => match l {
+            It => "Caricamento…",
+            En => "Loading…",
+            De => "Wird geladen…",
+            Es => "Cargando…",
+            Fr => "Chargement…",
         },
         TitoloLingua => match l {
             It => "Lingua",

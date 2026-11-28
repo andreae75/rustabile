@@ -270,29 +270,50 @@ pub fn togli_da_playlist(playlist: &Path, uri: &str) -> bool {
 /// Trasforma un file, una cartella o una playlist in voci da suonare.
 /// Le cartelle vengono esplorate (sottocartelle comprese) in ordine alfabetico.
 pub fn raccogli(uri: &str, leggi: Leggi, risultato: &mut Vec<Voce>) {
+    match percorso(uri) {
+        Some(cartella) if cartella.is_dir() => esplora(&cartella, leggi, risultato),
+        _ => raccogli_file(uri, leggi, risultato),
+    }
+}
+
+/// Il tipo di ogni voce arriva già con l'elenco della cartella: non lo chiediamo
+/// file per file, che su un disco di rete richiede minuti.
+fn esplora(cartella: &Path, leggi: Leggi, risultato: &mut Vec<Voce>) {
+    let Ok(voci) = std::fs::read_dir(cartella) else {
+        return;
+    };
+    let mut figli: Vec<(PathBuf, bool)> = voci
+        .filter_map(Result::ok)
+        .map(|v| {
+            let percorso = v.path();
+            // Per i collegamenti serve guardare dove portano.
+            let e_cartella = v
+                .file_type()
+                .is_ok_and(|t| t.is_dir() || (t.is_symlink() && percorso.is_dir()));
+            (percorso, e_cartella)
+        })
+        .collect();
+    figli.sort();
+    for (figlio, e_cartella) in figli {
+        if e_cartella {
+            esplora(&figlio, leggi, risultato);
+        } else {
+            raccogli_file(&uri_da_percorso(&figlio), leggi, risultato);
+        }
+    }
+}
+
+fn raccogli_file(uri: &str, leggi: Leggi, risultato: &mut Vec<Voce>) {
     let est = estensione(uri);
     if ESTENSIONI_PLAYLIST.contains(&est.as_str()) {
         risultato.extend(leggi_playlist(uri, leggi));
-        return;
-    }
-    match percorso(uri) {
-        Some(cartella) if cartella.is_dir() => {
-            let Ok(voci) = std::fs::read_dir(&cartella) else {
-                return;
-            };
-            let mut figli: Vec<_> = voci.filter_map(|v| v.ok().map(|v| v.path())).collect();
-            figli.sort();
-            for figlio in figli {
-                raccogli(&uri_da_percorso(&figlio), leggi, risultato);
-            }
-        }
-        Some(_) if !ESTENSIONI_AUDIO.contains(&est.as_str()) => {}
+    } else if percorso(uri).is_none() || ESTENSIONI_AUDIO.contains(&est.as_str()) {
         // File audio locale, oppure indirizzo di uno stream.
-        _ => risultato.push(Voce {
+        risultato.push(Voce {
             uri: uri.to_string(),
             nome: nome_da_uri(uri),
             origine: None,
-        }),
+        });
     }
 }
 

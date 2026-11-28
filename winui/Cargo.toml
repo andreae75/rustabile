@@ -5,6 +5,10 @@ edition = "2024"
 description = "Rustabile con la finestra WinUI 3 e l'audio di Windows"
 license = "MIT"
 
+[[bin]]
+name = "Rustabile"
+path = "src/main.rs"
+
 [build-dependencies]
 winresource = "0.1"
 
@@ -12,6 +16,7 @@ winresource = "0.1"
 rustabile-nucleo = { path = "../nucleo" }
 rfd = "0.15"
 trash = "5"
+windows-core = "0.62"
 windows-reactor = "0.100"
 
 [target.'cfg(windows)'.dependencies.windows]
@@ -27,6 +32,13 @@ features = [
     "Web_Http",
     "Win32_Graphics_Gdi",
     "Win32_Globalization",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
