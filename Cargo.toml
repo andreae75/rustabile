@@ -7,6 +7,10 @@ license = "MIT"
 authors = ["andreae75"]
 repository = "https://github.com/andreae75/rustabile"
 
+[workspace]
+members = ["nucleo", "winui"]
+
 [dependencies]
+rustabile-nucleo = { path = "nucleo" }
 gst = { version = "0.25.4", package = "gstreamer" }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_12"] }

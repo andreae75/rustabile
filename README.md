@@ -52,6 +52,20 @@ Per installarlo (programma in `~/.local/bin`, lanciatore e icona nel menu delle 
 
 Con `./installa.sh --predefinito` diventa anche il lettore predefinito per i file audio.
 
+## La versione per Windows (WinUI 3)
+
+La cartella `winui/` è una seconda finestra, in Rust con [`windows-reactor`](https://crates.io/crates/windows-reactor) (libreria ancora in anteprima) e l'audio di Windows al posto di GStreamer. Playlist, coda, preferenze e lingue stanno in `nucleo/`, comune alle due.
+
+Servono Rust (MSVC) e il Windows App Runtime 2; niente GTK né GStreamer:
+
+```powershell
+cargo run --release -p rustabile-winui
+```
+
+Differenze rispetto alla versione GNOME: delle radio non mostra il nome della stazione né il brano in onda, e le preferenze stanno in `%APPDATA%\rustabile\impostazioni.ini`.
+
+Le prove della parte comune: `cargo test -p rustabile-nucleo`.
+
 ## Idee per farlo crescere
 
 - Leggere titolo, artista e copertina dai tag (crate `lofty`) invece di usare il nome del file.

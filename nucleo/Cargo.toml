@@ -1,0 +1,10 @@
+[package]
+name = "rustabile-nucleo"
+version = "0.10.0"
+edition = "2024"
+description = "La parte di Rustabile comune alle finestre GTK4 e WinUI 3"
+license = "MIT"
+
+[dependencies]
+dirs = "6"
+url = "2"

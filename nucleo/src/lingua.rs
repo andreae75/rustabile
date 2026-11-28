@@ -1,8 +1,8 @@
 //! Traduzioni dell'interfaccia: italiano, inglese, tedesco, spagnolo, francese.
 //!
 //! Per un programma piccolo basta una tabella nel codice: niente file .po da
-//! installare. La lingua si sceglie da quella del desktop (variabili LANGUAGE,
-//! LC_ALL, LANG lette da GLib), a meno che nelle Preferenze se ne sia scelta una;
+//! installare. La lingua si sceglie da quella del desktop (la finestra la passa
+//! a `inizializza`), a meno che nelle Preferenze se ne sia scelta una;
 //! se non è una delle cinque si usa l'inglese.
 //! Per provarne un'altra: `RUSTABILE_LINGUA=de rustabile`.
 
@@ -30,25 +30,27 @@ impl Lingua {
     }
 }
 
-/// La lingua scelta, calcolata una volta sola al primo uso.
-pub fn lingua() -> Lingua {
-    static LINGUA: OnceLock<Lingua> = OnceLock::new();
-    *LINGUA.get_or_init(|| {
-        if let Some(l) = std::env::var("RUSTABILE_LINGUA")
+static LINGUA: OnceLock<Lingua> = OnceLock::new();
+
+/// Sceglie la lingua, una volta sola, all'avvio: la variabile `RUSTABILE_LINGUA`,
+/// poi la scelta nelle Preferenze (`scelta`, se non è "auto"), poi quelle del sistema.
+pub fn inizializza<S: AsRef<str>>(scelta: &str, di_sistema: &[S]) {
+    LINGUA.get_or_init(|| {
+        std::env::var("RUSTABILE_LINGUA")
             .ok()
             .and_then(|v| Lingua::da_codice(&v))
-        {
-            return l;
-        }
-        // Poi la scelta fatta nelle Preferenze, se non è "Automatica".
-        if let Some(l) = Lingua::da_codice(&crate::Impostazioni::carica().lingua) {
-            return l;
-        }
-        gtk::glib::language_names()
-            .iter()
-            .find_map(|nome| Lingua::da_codice(nome))
+            .or_else(|| Lingua::da_codice(scelta))
+            .or_else(|| {
+                di_sistema
+                    .iter()
+                    .find_map(|nome| Lingua::da_codice(nome.as_ref()))
+            })
             .unwrap_or(Lingua::En)
-    })
+    });
+}
+
+pub fn lingua() -> Lingua {
+    LINGUA.get().copied().unwrap_or(Lingua::En)
 }
 
 /// Ogni testo dell'interfaccia ha una voce qui.
@@ -85,6 +87,8 @@ pub enum Testo {
     TitoloLingua,
     LinguaAutomatica,
     LinguaSpiegazione,
+    DescrizioneWindows,
+    Chiudi,
 }
 
 pub fn t(testo: Testo) -> &'static str {
@@ -293,6 +297,30 @@ pub fn t(testo: Testo) -> &'static str {
             Fr => {
                 "Un petit lecteur de musique pour GNOME, simple comme les lecteurs d'antan.\nÉcrit en Rust avec GTK4 et GStreamer."
             }
+        },
+        DescrizioneWindows => match l {
+            It => {
+                "Un mini lettore musicale, semplice come i lettori di una volta.\nScritto in Rust con WinUI 3 e l'audio di Windows."
+            }
+            En => {
+                "A tiny music player, as simple as the players of the old days.\nWritten in Rust with WinUI 3 and Windows audio."
+            }
+            De => {
+                "Ein kleiner Musikspieler, so einfach wie die Player von früher.\nGeschrieben in Rust mit WinUI 3 und dem Windows-Audio."
+            }
+            Es => {
+                "Un pequeño reproductor de música, sencillo como los de antes.\nEscrito en Rust con WinUI 3 y el audio de Windows."
+            }
+            Fr => {
+                "Un petit lecteur de musique, simple comme les lecteurs d'antan.\nÉcrit en Rust avec WinUI 3 et l'audio de Windows."
+            }
+        },
+        Chiudi => match l {
+            It => "Chiudi",
+            En => "Close",
+            De => "Schließen",
+            Es => "Cerrar",
+            Fr => "Fermer",
         },
         TitoloLingua => match l {
             It => "Lingua",

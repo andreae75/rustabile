@@ -1,36 +1,21 @@
 //! Rustabile: un mini lettore musicale per GNOME, in Rust.
 //!
-//! GTK4 per la finestra, GStreamer (`playbin`) per l'audio.
+//! GTK4 per la finestra, GStreamer (`playbin`) per l'audio. Playlist, coda,
+//! preferenze e lingue stanno in `nucleo`, comune alla versione WinUI.
 //! - Trascina file, cartelle o playlist (.m3u, .m3u8, .pls) nella finestra.
 //! - Il pulsante "radio" accetta l'indirizzo di uno stream o di una playlist online.
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
-
-mod lingua;
 
 use gst::prelude::*;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use lingua::{Testo, t};
+use rustabile_nucleo::voci;
+use rustabile_nucleo::{Coda, Impostazioni, Qualita, Testo, Voce, lingua, mm_ss, t};
 
 const APP_ID: &str = "io.github.andreae75.Rustabile";
-
-/// Estensioni dei file che consideriamo musica quando esploriamo una cartella.
-const ESTENSIONI_AUDIO: &[&str] = &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "wma"];
-/// Estensioni delle playlist che sappiamo leggere.
-const ESTENSIONI_PLAYLIST: &[&str] = &["m3u", "m3u8", "pls"];
-
-/// Una voce della playlist: un file locale o uno stream radio, sempre come URI.
-struct Voce {
-    uri: String,
-    nome: String,
-    /// La playlist locale (.m3u/.pls) da cui arriva, se c'è: cestinando il brano
-    /// ne togliamo anche la riga, se il file della playlist è scrivibile.
-    origine: Option<std::path::PathBuf>,
-}
 
 /// Tutto lo stato del lettore: il motore audio, la playlist e i widget da aggiornare.
 ///
@@ -39,8 +24,7 @@ struct Voce {
 /// `RefCell` per poterlo modificare anche se la callback ne ha solo un riferimento.
 struct Stato {
     playbin: gst::Element,
-    playlist: Vec<Voce>,
-    corrente: Option<usize>,
+    coda: Coda,
     titolo: gtk::Label,
     tempo: gtk::Label,
     barra: gtk::Scale,
@@ -61,114 +45,24 @@ struct Stato {
     _guardia_bus: Option<gst::bus::BusWatchGuard>,
 }
 
-/// Quello che sappiamo del brano in corso: arriva a pezzi, dai tag e dal decoder.
-#[derive(Default)]
-struct Qualita {
-    /// Nome del codec dai tag ("Free Lossless Audio Codec (FLAC)").
-    codec: Option<String>,
-    /// Bitrate in bit/s dai tag (MP3 e radio di solito lo dichiarano).
-    bitrate: Option<u32>,
-    /// Dimensione del file locale, per stimare il bitrate se i tag non lo dicono.
-    dimensione: Option<u64>,
-    /// Estensione, come ripiego per il nome del formato.
-    estensione: String,
-    /// Vero per gli stream (radio): cambia come mostriamo titolo e stazione.
-    radio: bool,
-    /// Nome della stazione, se la radio lo trasmette (tag "organization", da icy-name).
-    stazione: Option<String>,
-    /// Brano in onda, se la radio lo trasmette (tag "title", da StreamTitle).
-    in_onda: Option<String>,
-}
-
-impl Qualita {
-    /// "Free Lossless Audio Codec (FLAC)" → "FLAC"; altrimenti il nome così com'è.
-    fn formato(&self) -> String {
-        if let Some(codec) = &self.codec {
-            if let (Some(a), Some(b)) = (codec.rfind('('), codec.rfind(')')) {
-                if a < b {
-                    return codec[a + 1..b].to_string();
-                }
-            }
-            return codec.clone();
-        }
-        self.estensione.to_uppercase()
-    }
-
-    fn senza_perdita(&self) -> bool {
-        let f = self.formato().to_uppercase();
-        ["FLAC", "WAV", "PCM", "ALAC", "APE", "WAVPACK"]
-            .iter()
-            .any(|x| f.contains(x))
+/// L'URI che usa il nucleo: se GIO conosce un percorso (anche di rete, via gvfs)
+/// vale quello, altrimenti l'indirizzo così com'è.
+fn uri_di(file: &gio::File) -> String {
+    match file.path() {
+        Some(p) => voci::uri_da_percorso(&p),
+        None => file.uri().to_string(),
     }
 }
 
-/// Le preferenze, salvate in `~/.config/rustabile/impostazioni.ini`
-/// con il `KeyFile` di GLib (lo stesso formato dei file .desktop).
-struct Impostazioni {
-    /// Trascinando file nella finestra: suonano subito (vero) o vanno in coda (falso).
-    trascina_suona: bool,
-    /// Il pannello playlist era aperto all'ultima chiusura.
-    mostra_playlist: bool,
-    /// Lingua dell'interfaccia: "auto" (quella del desktop) o "it", "en", "de", "es", "fr".
-    lingua: String,
-    volume: f64,
-}
-
-impl Impostazioni {
-    const GRUPPO: &str = "Rustabile";
-
-    fn percorso() -> std::path::PathBuf {
-        glib::user_config_dir()
-            .join("rustabile")
-            .join("impostazioni.ini")
-    }
-
-    fn carica() -> Self {
-        let kf = glib::KeyFile::new();
-        let _ = kf.load_from_file(Self::percorso(), glib::KeyFileFlags::NONE);
-        Impostazioni {
-            trascina_suona: kf.boolean(Self::GRUPPO, "trascina_suona").unwrap_or(true),
-            mostra_playlist: kf.boolean(Self::GRUPPO, "mostra_playlist").unwrap_or(false),
-            lingua: kf
-                .string(Self::GRUPPO, "lingua")
-                .map(|s| s.to_string())
-                .unwrap_or_else(|_| "auto".into()),
-            volume: kf.double(Self::GRUPPO, "volume").unwrap_or(0.8),
-        }
-    }
-
-    fn salva(&self) {
-        let kf = glib::KeyFile::new();
-        kf.set_boolean(Self::GRUPPO, "trascina_suona", self.trascina_suona);
-        kf.set_boolean(Self::GRUPPO, "mostra_playlist", self.mostra_playlist);
-        kf.set_string(Self::GRUPPO, "lingua", &self.lingua);
-        kf.set_double(Self::GRUPPO, "volume", self.volume);
-        let percorso = Self::percorso();
-        if let Some(cartella) = percorso.parent() {
-            let _ = std::fs::create_dir_all(cartella);
-        }
-        if let Err(e) = kf.save_to_file(&percorso) {
-            eprintln!("Impossibile salvare le impostazioni: {e}");
-        }
-    }
-}
-
-/// "44100" → "44,1 kHz", "96000" → "96 kHz".
-fn khz(hz: i32) -> String {
-    let k = hz as f64 / 1000.0;
-    if k.fract() == 0.0 {
-        format!("{k:.0} kHz")
-    } else {
-        format!("{k:.1} kHz").replace('.', ",")
-    }
-}
-
-fn canali(n: i32) -> String {
-    match n {
-        1 => t(Testo::Mono).into(),
-        2 => t(Testo::Stereo).into(),
-        n => lingua::canali_n(n),
-    }
+/// File, cartelle, playlist e radio diventano voci. Le playlist online si leggono con GIO.
+fn raccogli(uri: &str, risultato: &mut Vec<Voce>) {
+    let leggi = |u: &str| {
+        let (byte, _) = gio::File::for_uri(u)
+            .load_contents(gio::Cancellable::NONE)
+            .ok()?;
+        Some(byte.to_vec())
+    };
+    voci::raccogli(uri, &leggi, risultato);
 }
 
 /// Bit per campione dal formato audio decodificato ("S16LE" → 16, "S24_32LE" → 24).
@@ -188,31 +82,21 @@ fn bit(formato: &str) -> Option<u32> {
 impl Stato {
     /// Fa partire la voce numero `indice` della playlist.
     fn suona(&mut self, indice: usize) {
-        let Some(voce) = self.playlist.get(indice) else {
+        let Some(voce) = self.coda.voci.get(indice) else {
             return;
         };
         let _ = self.playbin.set_state(gst::State::Null);
         self.playbin.set_property("uri", voce.uri.as_str());
         let _ = self.playbin.set_state(gst::State::Playing);
 
-        let file = gio::File::for_uri(&voce.uri);
-        self.qualita = Qualita {
-            dimensione: file
-                .path()
-                .and_then(|p| std::fs::metadata(p).ok())
-                .map(|m| m.len()),
-            estensione: estensione(&voce.uri),
-            radio: file.path().is_none(),
-            ..Default::default()
-        };
+        self.qualita = Qualita::per(&voce.uri);
         self.dettagli.set_label("");
         // Con una radio non si può andare avanti e indietro: barra grigia da subito.
         self.barra.set_sensitive(!self.qualita.radio);
         self.barra.set_value(0.0);
 
-        let precedente = self.corrente.replace(indice);
-        self.titolo
-            .set_label(&format!("{}. {}", indice + 1, voce.nome));
+        let precedente = self.coda.corrente.replace(indice);
+        self.titolo.set_label(&self.coda.testo_riga(indice));
         self.pulsante_play
             .set_icon_name("media-playback-pause-symbolic");
 
@@ -228,10 +112,6 @@ impl Stato {
             self.vista
                 .scroll_to(indice as u32, gtk::ListScrollFlags::NONE, None);
         }
-    }
-
-    fn testo_riga(&self, i: usize) -> String {
-        format!("{}. {}", i + 1, self.playlist[i].nome)
     }
 
     /// Aggiorna il segno ▶ di una riga cambiando solo il testo della sua etichetta.
@@ -254,10 +134,10 @@ impl Stato {
 
     /// Aggiunge voci in fondo alla playlist (e al pannello), senza farle partire.
     fn estendi(&mut self, nuove: Vec<Voce>) {
-        let prima = self.playlist.len();
-        self.playlist.extend(nuove);
-        let testi: Vec<String> = (prima..self.playlist.len())
-            .map(|i| self.testo_riga(i))
+        let prima = self.coda.voci.len();
+        self.coda.voci.extend(nuove);
+        let testi: Vec<String> = (prima..self.coda.voci.len())
+            .map(|i| self.coda.testo_riga(i))
             .collect();
         let testi: Vec<&str> = testi.iter().map(String::as_str).collect();
         self.elenco.splice(prima as u32, 0, &testi);
@@ -265,7 +145,7 @@ impl Stato {
     }
 
     fn aggiorna_conteggio(&self) {
-        let n = self.playlist.len();
+        let n = self.coda.voci.len();
         self.conteggio.set_label(&lingua::brani(n));
     }
 
@@ -281,8 +161,8 @@ impl Stato {
     }
 
     fn play_pausa(&mut self) {
-        match self.corrente {
-            None if !self.playlist.is_empty() => self.suona(0),
+        match self.coda.corrente {
+            None if !self.coda.voci.is_empty() => self.suona(0),
             None => {}
             Some(_) if self.sta_suonando() => {
                 let _ = self.playbin.set_state(gst::State::Paused);
@@ -306,23 +186,23 @@ impl Stato {
     }
 
     fn avanti(&mut self) {
-        match self.corrente {
-            Some(i) if i + 1 < self.playlist.len() => self.suona(i + 1),
+        if let Some(prossima) = self.coda.successiva() {
+            self.suona(prossima);
+        } else if let Some(i) = self.coda.corrente {
             // Fine della playlist: ci fermiamo e ripartiamo dall'inizio al prossimo play.
-            Some(i) => {
-                self.ferma();
-                self.corrente = None;
-                self.segno.corrente.set(None);
-                self.aggiorna_riga(i);
-            }
-            None => {}
+            self.ferma();
+            self.coda.corrente = None;
+            self.segno.corrente.set(None);
+            self.aggiorna_riga(i);
         }
     }
 
     /// Come nei vecchi lettori: se il brano è avanti più di 3 secondi ricomincia,
     /// altrimenti torna al brano precedente.
     fn indietro(&mut self) {
-        let Some(i) = self.corrente else { return };
+        let Some(i) = self.coda.corrente else {
+            return;
+        };
         let posizione = self.playbin.query_position::<gst::ClockTime>();
         if i == 0 || posizione.is_some_and(|p| p.seconds() > 3) {
             self.vai_a(0.0);
@@ -341,9 +221,9 @@ impl Stato {
 
     /// Aggiunge voci in fondo alla playlist e fa partire subito la prima nuova.
     fn aggiungi_e_suona(&mut self, nuove: Vec<Voce>) {
-        let prima_nuova = self.playlist.len();
+        let prima_nuova = self.coda.voci.len();
         self.estendi(nuove);
-        if prima_nuova < self.playlist.len() {
+        if prima_nuova < self.coda.voci.len() {
             self.suona(prima_nuova);
         }
     }
@@ -352,9 +232,11 @@ impl Stato {
     /// lo toglie dalla playlist e passa al brano successivo.
     /// Una radio non è un file: la togliamo solo dalla playlist.
     fn cestina_corrente(&mut self) {
-        let Some(i) = self.corrente else { return };
-        let file = gio::File::for_uri(&self.playlist[i].uri);
-        let nome = self.playlist[i].nome.clone();
+        let Some(i) = self.coda.corrente else {
+            return;
+        };
+        let Voce { uri, nome, origine } = self.coda.voci[i].clone();
+        let file = gio::File::for_uri(&uri);
 
         // Fermiamo la riproduzione prima, così il file non è più in uso.
         let _ = self.playbin.set_state(gst::State::Null);
@@ -370,27 +252,26 @@ impl Stato {
         // Il brano arrivava da una playlist sul disco? Togliamo anche la sua riga,
         // se il file della playlist è scrivibile (altrimenti resta com'è).
         let mut da_dove = String::new();
-        if let (true, Some(origine)) = (file.path().is_some(), &self.playlist[i].origine) {
-            if togli_da_playlist(origine, &self.playlist[i].uri) {
+        if let (true, Some(origine)) = (file.path().is_some(), &origine) {
+            if voci::togli_da_playlist(origine, &uri) {
                 if let Some(nome_lista) = origine.file_name() {
                     da_dove = format!(" — {}", nome_lista.to_string_lossy());
                 }
             }
         }
 
-        self.playlist.remove(i);
-        self.corrente = None;
+        self.coda.togli_corrente();
         self.segno.corrente.set(None);
         // Le righe dopo quella tolta cambiano numero: le riscriviamo tutte.
-        let testi: Vec<String> = (i..self.playlist.len())
-            .map(|j| self.testo_riga(j))
+        let testi: Vec<String> = (i..self.coda.voci.len())
+            .map(|j| self.coda.testo_riga(j))
             .collect();
         let testi: Vec<&str> = testi.iter().map(String::as_str).collect();
         self.elenco
             .splice(i as u32, self.elenco.n_items() - i as u32, &testi);
         self.aggiorna_conteggio();
 
-        if i < self.playlist.len() {
+        if i < self.coda.voci.len() {
             self.suona(i);
         } else {
             self.ferma();
@@ -401,15 +282,7 @@ impl Stato {
 
     /// Salva la playlist come M3U: percorsi completi per i file, indirizzi per le radio.
     fn salva_playlist(&mut self, file: &gio::File) {
-        let mut testo = String::from("#EXTM3U\n");
-        for voce in &self.playlist {
-            let f = gio::File::for_uri(&voce.uri);
-            let dove = f
-                .path()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| voce.uri.clone());
-            testo.push_str(&format!("#EXTINF:-1,{}\n{dove}\n", voce.nome));
-        }
+        let testo = self.coda.m3u();
         let esito = match file.path() {
             Some(p) => std::fs::write(&p, testo).map_err(|e| e.to_string()),
             None => Err("percorso non locale".into()),
@@ -435,10 +308,9 @@ impl Stato {
 
     fn svuota(&mut self) {
         self.ferma();
-        self.playlist.clear();
+        self.coda.svuota();
         self.elenco.splice(0, self.elenco.n_items(), &[]);
         self.aggiorna_conteggio();
-        self.corrente = None;
         self.segno.corrente.set(None);
         self.titolo.set_label(t(Testo::TrascinaQui));
         self.dettagli.set_label("");
@@ -449,9 +321,9 @@ impl Stato {
         if nuove.is_empty() {
             return;
         }
-        let prima_nuova = self.playlist.len();
+        let prima_nuova = self.coda.voci.len();
         self.estendi(nuove);
-        if self.corrente.is_none() {
+        if self.coda.corrente.is_none() {
             self.suona(prima_nuova);
         }
     }
@@ -459,7 +331,9 @@ impl Stato {
     /// I "tag" arrivano dal file o dalla radio: titolo, codec, bitrate.
     /// Le radio mandano così il nome della stazione e il brano in onda.
     fn mostra_tag(&mut self, tag: &gst::TagList) {
-        let Some(i) = self.corrente else { return };
+        let Some(i) = self.coda.corrente else {
+            return;
+        };
         let testo = |t: &str| Some(t.trim().to_string()).filter(|t| !t.is_empty());
         let titolo = tag.get::<gst::tags::Title>().and_then(|t| testo(t.get()));
 
@@ -473,13 +347,7 @@ impl Stato {
             if titolo.is_some() {
                 self.qualita.in_onda = titolo;
             }
-            // "Stazione — Brano", oppure quello che c'è dei due.
-            let riga = match (&self.qualita.stazione, &self.qualita.in_onda) {
-                (Some(s), Some(t)) => Some(format!("{s} — {t}")),
-                (Some(x), None) | (None, Some(x)) => Some(x.clone()),
-                (None, None) => None,
-            };
-            if let Some(riga) = riga {
+            if let Some(riga) = self.qualita.riga_radio() {
                 self.titolo.set_label(&format!("{}. {}", i + 1, riga));
             }
         } else if let Some(titolo) = titolo {
@@ -501,45 +369,24 @@ impl Stato {
     /// Compone la riga dei dettagli: formato, bit, frequenza, canali, bitrate.
     /// Frequenza, canali e bit li leggiamo dall'audio già decodificato.
     fn aggiorna_dettagli(&self, durata: Option<gst::ClockTime>) {
-        if self.corrente.is_none()
+        if self.coda.corrente.is_none()
             || self
                 .avviso_fino
                 .is_some_and(|fino| std::time::Instant::now() < fino)
         {
             return;
         }
-        let q = &self.qualita;
-        let mut parti = vec![q.formato()];
-
         let pad = self
             .playbin
             .emit_by_name::<Option<gst::Pad>>("get-audio-pad", &[&0i32]);
-        if let Some(caps) = pad.and_then(|p| p.current_caps()) {
-            if let Some(s) = caps.structure(0) {
-                if q.senza_perdita() {
-                    if let Some(b) = s.get::<&str>("format").ok().and_then(bit) {
-                        parti.push(format!("{b} bit"));
-                    }
-                }
-                if let Ok(rate) = s.get::<i32>("rate") {
-                    parti.push(khz(rate));
-                }
-                if let Ok(n) = s.get::<i32>("channels") {
-                    parti.push(canali(n));
-                }
-            }
-        }
-
-        // Bitrate: dai tag se c'è, altrimenti stimato da dimensione e durata del file.
-        let kbps = q.bitrate.map(|b| b / 1000).or_else(|| {
-            let (dim, dur) = (q.dimensione?, durata?.seconds());
-            (dur > 0).then(|| (dim * 8 / dur / 1000) as u32)
-        });
-        if let Some(k) = kbps {
-            parti.push(format!("{k} kbps"));
-        }
-
-        let riga = parti.join(" · ");
+        let caps = pad.and_then(|p| p.current_caps());
+        let s = caps.as_ref().and_then(|c| c.structure(0));
+        let riga = self.qualita.dettagli(
+            s.and_then(|s| s.get::<&str>("format").ok()).and_then(bit),
+            s.and_then(|s| s.get::<i32>("rate").ok()),
+            s.and_then(|s| s.get::<i32>("channels").ok()),
+            durata.map(|d| d.seconds()),
+        );
         if self.dettagli.label() != riga {
             #[cfg(debug_assertions)]
             eprintln!("dettagli: {riga}");
@@ -574,229 +421,6 @@ impl Stato {
                     .set_label(&format!("{}  ● LIVE", mm_ss(posizione.seconds())));
             }
         }
-    }
-}
-
-fn mm_ss(secondi: u64) -> String {
-    format!("{:02}:{:02}", secondi / 60, secondi % 60)
-}
-
-fn estensione(nome: &str) -> String {
-    Path::new(nome.split(['?', '#']).next().unwrap_or(nome))
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
-}
-
-/// Nome leggibile di una voce: per i file il nome senza estensione, per gli stream l'indirizzo.
-/// Esercizio: leggere i tag dei file (crate `lofty`).
-fn nome_da_file(file: &gio::File) -> String {
-    match file.path() {
-        Some(p) => p
-            .file_stem()
-            .map(|s| s.to_string_lossy().replace('_', " "))
-            .unwrap_or_default(),
-        None => file.uri().to_string(),
-    }
-}
-
-/// Una voce scritta in una playlist ("album/01.mp3", "/musica/x.flac", "http://…")
-/// diventa un file: i percorsi relativi partono dalla cartella della playlist.
-fn risolvi_voce(base: Option<&gio::File>, voce: &str) -> gio::File {
-    if voce.contains("://") {
-        gio::File::for_uri(voce)
-    } else if Path::new(voce).is_absolute() {
-        gio::File::for_path(voce)
-    } else {
-        match base {
-            Some(b) => b.resolve_relative_path(voce.replace('\\', "/")),
-            None => gio::File::for_path(voce),
-        }
-    }
-}
-
-/// Legge una playlist (locale o online) e restituisce le sue voci.
-/// I percorsi relativi vengono risolti rispetto alla cartella della playlist.
-fn leggi_playlist(file: &gio::File) -> Vec<Voce> {
-    let Ok((byte, _)) = file.load_contents(gio::Cancellable::NONE) else {
-        eprintln!("Impossibile leggere la playlist {}", file.uri());
-        return Vec::new();
-    };
-    let testo = String::from_utf8_lossy(&byte);
-    let base = file.parent();
-    let origine = file.path();
-    let voce = |f: gio::File, nome: String| Voce {
-        uri: f.uri().to_string(),
-        nome,
-        origine: origine.clone(),
-    };
-
-    let mut voci = Vec::new();
-    if estensione(&file.uri()) == "pls" {
-        // Formato PLS: File1=..., Title1=...
-        let mut titoli = std::collections::HashMap::new();
-        let mut indirizzi = Vec::new();
-        for riga in testo.lines() {
-            if let Some((chiave, valore)) = riga.trim().split_once('=') {
-                let chiave = chiave.to_lowercase();
-                if let Some(n) = chiave.strip_prefix("file") {
-                    indirizzi.push((n.to_string(), valore.trim().to_string()));
-                } else if let Some(n) = chiave.strip_prefix("title") {
-                    titoli.insert(n.to_string(), valore.trim().to_string());
-                }
-            }
-        }
-        for (n, indirizzo) in indirizzi {
-            let f = risolvi_voce(base.as_ref(), &indirizzo);
-            let nome = titoli.remove(&n).unwrap_or_else(|| nome_da_file(&f));
-            voci.push(voce(f, nome));
-        }
-    } else {
-        // Formato M3U: una voce per riga; "#EXTINF:durata,Titolo" dà il nome alla riga dopo.
-        let mut prossimo_nome: Option<String> = None;
-        for riga in testo.lines().map(str::trim) {
-            if let Some(info) = riga.strip_prefix("#EXTINF:") {
-                prossimo_nome = info.split_once(',').map(|(_, t)| t.trim().to_string());
-            } else if !riga.is_empty() && !riga.starts_with('#') {
-                let f = risolvi_voce(base.as_ref(), riga);
-                let nome = prossimo_nome.take().unwrap_or_else(|| nome_da_file(&f));
-                voci.push(voce(f, nome));
-            }
-        }
-    }
-    voci
-}
-
-/// Toglie da una playlist locale tutte le voci che puntano a `uri`.
-/// Tocca il file solo se lo possiamo scrivere; altrimenti lo lascia com'è.
-/// Restituisce `true` se il file è stato riscritto.
-fn togli_da_playlist(playlist: &Path, uri: &str) -> bool {
-    // Si può scrivere? Aprirlo in aggiunta non cambia nulla, ma fallisce se non abbiamo il permesso.
-    if std::fs::OpenOptions::new()
-        .append(true)
-        .open(playlist)
-        .is_err()
-    {
-        return false;
-    }
-    let Ok(testo) = std::fs::read_to_string(playlist) else {
-        return false;
-    };
-    let base = gio::File::for_path(playlist).parent();
-    let punta_al_brano = |voce: &str| risolvi_voce(base.as_ref(), voce.trim()).uri() == uri;
-    let a_capo = if testo.contains("\r\n") { "\r\n" } else { "\n" };
-    let righe: Vec<&str> = testo.lines().collect();
-
-    let nuove: Vec<String> = if estensione(&playlist.to_string_lossy()) == "pls" {
-        // PLS: togliamo FileN/TitleN/LengthN delle voci da eliminare e rinumeriamo il resto.
-        let numero = |riga: &str, prefisso: &str| -> Option<String> {
-            let (chiave, _) = riga.trim().split_once('=')?;
-            let chiave = chiave.to_lowercase();
-            let n = chiave.strip_prefix(prefisso)?;
-            (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| n.to_string())
-        };
-        let via: std::collections::HashSet<String> = righe
-            .iter()
-            .filter_map(|r| {
-                let n = numero(r, "file")?;
-                punta_al_brano(r.split_once('=')?.1).then_some(n)
-            })
-            .collect();
-        if via.is_empty() {
-            return false;
-        }
-        let mut restanti: Vec<String> = righe.iter().filter_map(|r| numero(r, "file")).collect();
-        restanti.retain(|n| !via.contains(n));
-        let nuovo_numero = |n: &str| restanti.iter().position(|x| x == n).map(|i| i + 1);
-        righe
-            .iter()
-            .filter_map(|r| {
-                for prefisso in ["file", "title", "length"] {
-                    if let Some(n) = numero(r, prefisso) {
-                        let nuovo = nuovo_numero(&n)?;
-                        let (chiave, valore) = r.trim().split_once('=')?;
-                        let nome = &chiave[..prefisso.len()];
-                        return Some(format!("{nome}{nuovo}={valore}"));
-                    }
-                }
-                if r.trim().to_lowercase().starts_with("numberofentries=") {
-                    return Some(format!("NumberOfEntries={}", restanti.len()));
-                }
-                Some(r.to_string())
-            })
-            .collect()
-    } else {
-        // M3U: togliamo la riga della voce e la sua "#EXTINF" subito prima.
-        let mut via = vec![false; righe.len()];
-        let mut ultima_extinf: Option<usize> = None;
-        for (i, riga) in righe.iter().enumerate() {
-            let r = riga.trim();
-            if r.starts_with("#EXTINF:") {
-                ultima_extinf = Some(i);
-            } else if !r.is_empty() && !r.starts_with('#') {
-                if punta_al_brano(r) {
-                    via[i] = true;
-                    if let Some(e) = ultima_extinf {
-                        via[e] = true;
-                    }
-                }
-                ultima_extinf = None;
-            }
-        }
-        if !via.contains(&true) {
-            return false;
-        }
-        righe
-            .iter()
-            .zip(via)
-            .filter(|(_, togli)| !togli)
-            .map(|(r, _)| r.to_string())
-            .collect()
-    };
-
-    let mut risultato = nuove.join(a_capo);
-    if testo.ends_with('\n') {
-        risultato.push_str(a_capo);
-    }
-    match std::fs::write(playlist, risultato) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!(
-                "Impossibile aggiornare la playlist {}: {e}",
-                playlist.display()
-            );
-            false
-        }
-    }
-}
-
-/// Trasforma un file, una cartella o una playlist in voci da suonare.
-/// Le cartelle vengono esplorate (sottocartelle comprese) in ordine alfabetico.
-fn raccogli(file: &gio::File, risultato: &mut Vec<Voce>) {
-    let uri = file.uri();
-    let est = estensione(&uri);
-    if ESTENSIONI_PLAYLIST.contains(&est.as_str()) {
-        risultato.extend(leggi_playlist(file));
-        return;
-    }
-    match file.path() {
-        Some(percorso) if percorso.is_dir() => {
-            let Ok(voci) = std::fs::read_dir(&percorso) else {
-                return;
-            };
-            let mut figli: Vec<_> = voci.filter_map(|v| v.ok().map(|v| v.path())).collect();
-            figli.sort();
-            for figlio in figli {
-                raccogli(&gio::File::for_path(figlio), risultato);
-            }
-        }
-        Some(_) if !ESTENSIONI_AUDIO.contains(&est.as_str()) => {}
-        // File audio locale, oppure indirizzo di uno stream.
-        _ => risultato.push(Voce {
-            uri: uri.to_string(),
-            nome: nome_da_file(file),
-            origine: None,
-        }),
     }
 }
 
@@ -840,7 +464,7 @@ fn pulsante_radio(stato: &Rc<RefCell<Stato>>) -> gtk::MenuButton {
                 return;
             }
             let mut nuove = Vec::new();
-            raccogli(&gio::File::for_uri(&testo), &mut nuove);
+            raccogli(&uri_di(&gio::File::for_uri(&testo)), &mut nuove);
             // Una radio aggiunta a mano parte subito.
             stato.borrow_mut().aggiungi_e_suona(nuove);
             campo.set_text("");
@@ -1134,7 +758,7 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
             .select_folder(Some(&w), gio::Cancellable::NONE, move |scelta| {
                 if let Ok(cartella) = scelta {
                     let mut nuove = Vec::new();
-                    raccogli(&cartella, &mut nuove);
+                    raccogli(&uri_di(&cartella), &mut nuove);
                     s.borrow_mut().aggiungi_e_suona(nuove);
                 }
             });
@@ -1176,22 +800,6 @@ fn pulsante_menu(finestra: &gtk::ApplicationWindow, stato: &Rc<RefCell<Stato>>) 
     menu.add_css_class("flat");
     menu.set_menu_model(Some(&modello));
     menu
-}
-
-/// Testo trascinato (per esempio un link da un browser): una voce per riga.
-fn file_da_testo(testo: &str) -> Vec<gio::File> {
-    testo
-        .lines()
-        .map(str::trim)
-        .filter(|r| !r.is_empty() && !r.starts_with('#'))
-        .map(|r| {
-            if r.contains("://") {
-                gio::File::for_uri(r)
-            } else {
-                gio::File::for_path(r)
-            }
-        })
-        .collect()
 }
 
 /// La finestra e il suo stato, creati una volta sola e riusati da "activate" e "open".
@@ -1255,8 +863,7 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     let segno = Rc::new(Segno::default());
     let stato = Rc::new(RefCell::new(Stato {
         playbin: playbin.clone(),
-        playlist: Vec::new(),
-        corrente: None,
+        coda: Coda::default(),
         titolo,
         tempo,
         barra: barra.clone(),
@@ -1389,16 +996,16 @@ fn costruisci_finestra(app: &gtk::Application) -> Finestra {
     destinazione.set_types(&[gdk::FileList::static_type(), String::static_type()]);
     let s = stato.clone();
     destinazione.connect_drop(move |_, valore, _, _| {
-        let file = if let Ok(lista) = valore.get::<gdk::FileList>() {
-            lista.files()
+        let uri = if let Ok(lista) = valore.get::<gdk::FileList>() {
+            lista.files().iter().map(uri_di).collect()
         } else if let Ok(testo) = valore.get::<String>() {
-            file_da_testo(&testo)
+            voci::uri_da_righe(&testo)
         } else {
             return false;
         };
         let mut nuove = Vec::new();
-        for f in &file {
-            raccogli(f, &mut nuove);
+        for u in &uri {
+            raccogli(u, &mut nuove);
         }
         if nuove.is_empty() {
             return false;
@@ -1472,6 +1079,7 @@ fn registra_icone(display: &gdk::Display) {
 
 fn main() -> glib::ExitCode {
     gst::init().expect("impossibile inizializzare GStreamer");
+    lingua::inizializza(&Impostazioni::carica().lingua, &glib::language_names());
 
     // HANDLES_OPEN: accettiamo file da riga di comando e da "Apri con" di Nautilus.
     // GApplication garantisce una sola istanza: se Rustabile è già aperto, i file
@@ -1534,154 +1142,11 @@ fn main() -> glib::ExitCode {
         let (w, stato) = ottieni(app);
         let mut nuove = Vec::new();
         for f in file {
-            raccogli(f, &mut nuove);
+            raccogli(&uri_di(f), &mut nuove);
         }
         stato.borrow_mut().aggiungi_e_suona(nuove);
         w.present();
     });
 
     app.run()
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn cartella_di_prova(nome: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("rustabile-test-{nome}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("album")).unwrap();
-        for f in [
-            "album/02 - Due.flac",
-            "album/01 - Uno.mp3",
-            "album/note.txt",
-        ] {
-            std::fs::write(d.join(f), b"").unwrap();
-        }
-        d
-    }
-
-    #[test]
-    fn cartella_in_ordine_senza_file_non_audio() {
-        let d = cartella_di_prova("cartella");
-        let mut voci = Vec::new();
-        raccogli(&gio::File::for_path(d.join("album")), &mut voci);
-        let nomi: Vec<_> = voci.iter().map(|v| v.nome.as_str()).collect();
-        assert_eq!(nomi, ["01 - Uno", "02 - Due"]);
-    }
-
-    #[test]
-    fn m3u_con_titoli_percorsi_relativi_e_radio() {
-        let d = cartella_di_prova("m3u");
-        std::fs::write(
-            d.join("lista.m3u"),
-            "#EXTM3U\n#EXTINF:123,Artista - Primo\nalbum/01 - Uno.mp3\n\nalbum/02 - Due.flac\n#EXTINF:-1,Radio di prova\nhttp://radio.example/stream\n",
-        )
-        .unwrap();
-        let mut voci = Vec::new();
-        raccogli(&gio::File::for_path(d.join("lista.m3u")), &mut voci);
-        assert_eq!(voci.len(), 3);
-        assert_eq!(voci[0].nome, "Artista - Primo");
-        assert!(voci[0].uri.ends_with("album/01%20-%20Uno.mp3"));
-        assert_eq!(voci[1].nome, "02 - Due");
-        assert_eq!(voci[2].nome, "Radio di prova");
-        assert_eq!(voci[2].uri, "http://radio.example/stream");
-    }
-
-    #[test]
-    fn pls_con_titoli() {
-        let d = cartella_di_prova("pls");
-        std::fs::write(
-            d.join("radio.pls"),
-            "[playlist]\nFile1=http://radio.example/a\nTitle1=Radio A\nFile2=http://radio.example/b\nNumberOfEntries=2\n",
-        )
-        .unwrap();
-        let mut voci = Vec::new();
-        raccogli(&gio::File::for_path(d.join("radio.pls")), &mut voci);
-        assert_eq!(voci.len(), 2);
-        assert_eq!(voci[0].nome, "Radio A");
-        assert_eq!(voci[1].uri, "http://radio.example/b");
-    }
-}
-
-#[cfg(test)]
-mod test_dettagli {
-    use super::*;
-
-    #[test]
-    fn frequenze_bit_e_nomi() {
-        assert_eq!(khz(44100), "44,1 kHz");
-        assert_eq!(khz(96000), "96 kHz");
-        assert_eq!(bit("S16LE"), Some(16));
-        assert_eq!(bit("S24_32LE"), Some(24));
-        assert_eq!(bit("F32LE"), None);
-        let q = Qualita {
-            codec: Some("Free Lossless Audio Codec (FLAC)".into()),
-            ..Default::default()
-        };
-        assert_eq!(q.formato(), "FLAC");
-        assert!(q.senza_perdita());
-    }
-}
-
-#[cfg(test)]
-mod test_togli_da_playlist {
-    use super::*;
-
-    fn cartella(nome: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("rustabile-togli-{nome}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    fn uri(d: &Path, nome: &str) -> String {
-        gio::File::for_path(d.join(nome)).uri().to_string()
-    }
-
-    #[test]
-    fn m3u_toglie_voce_e_extinf() {
-        let d = cartella("m3u");
-        let lista = d.join("lista.m3u");
-        std::fs::write(
-            &lista,
-            "#EXTM3U\n#EXTINF:100,Uno\n01 Uno.mp3\n#EXTINF:200,Due\n02 Due.flac\nhttp://radio.example/x\n",
-        )
-        .unwrap();
-        assert!(togli_da_playlist(&lista, &uri(&d, "02 Due.flac")));
-        assert_eq!(
-            std::fs::read_to_string(&lista).unwrap(),
-            "#EXTM3U\n#EXTINF:100,Uno\n01 Uno.mp3\nhttp://radio.example/x\n"
-        );
-        // Una voce che non c'è: il file non cambia.
-        assert!(!togli_da_playlist(&lista, &uri(&d, "99 Nessuno.mp3")));
-    }
-
-    #[test]
-    fn pls_toglie_e_rinumera() {
-        let d = cartella("pls");
-        let lista = d.join("lista.pls");
-        std::fs::write(
-            &lista,
-            "[playlist]\r\nFile1=a.mp3\r\nTitle1=A\r\nFile2=b.mp3\r\nTitle2=B\r\nLength2=10\r\nFile3=c.mp3\r\nTitle3=C\r\nNumberOfEntries=3\r\nVersion=2\r\n",
-        )
-        .unwrap();
-        assert!(togli_da_playlist(&lista, &uri(&d, "b.mp3")));
-        assert_eq!(
-            std::fs::read_to_string(&lista).unwrap(),
-            "[playlist]\r\nFile1=a.mp3\r\nTitle1=A\r\nFile2=c.mp3\r\nTitle2=C\r\nNumberOfEntries=2\r\nVersion=2\r\n"
-        );
-    }
-
-    #[test]
-    fn sola_lettura_resta_com_e() {
-        let d = cartella("solalettura");
-        let lista = d.join("lista.m3u");
-        std::fs::write(&lista, "01 Uno.mp3\n").unwrap();
-        let mut permessi = std::fs::metadata(&lista).unwrap().permissions();
-        permessi.set_readonly(true);
-        std::fs::set_permissions(&lista, permessi).unwrap();
-        assert!(!togli_da_playlist(&lista, &uri(&d, "01 Uno.mp3")));
-        assert_eq!(std::fs::read_to_string(&lista).unwrap(), "01 Uno.mp3\n");
-    }
 }
